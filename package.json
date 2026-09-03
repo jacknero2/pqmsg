@@ -11,6 +11,16 @@
     "type": "git",
     "url": "https://github.com/jacknero2/pqmsg.git"
   },
+  "scripts": {
+    "server": "node server/src/index.js",
+    "server:app": "electron server/app/main.js",
+    "client": "electron .",
+    "e2e": "node scripts/e2e.js",
+    "icon": "node scripts/make-icon.js",
+    "dist:client": "electron-builder --config build/client.yml",
+    "dist:server": "electron-builder --config build/server.yml",
+    "dist": "npm run dist:client && npm run dist:server"
+  },
   "dependencies": {
     "@noble/ciphers": "^1.2.1",
     "@noble/hashes": "^1.7.1",
@@ -18,5 +28,9 @@
     "@octokit/rest": "^21.1.1",
     "express": "^4.21.2",
     "ws": "^8.18.0"
+  },
+  "devDependencies": {
+    "electron": "^33.2.1",
+    "electron-builder": "^25.1.8"
   }
 }
