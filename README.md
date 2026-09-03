@@ -118,9 +118,13 @@ Delivery acks retry every cycle until confirmed (the server is idempotent).
 
 ### Server discovery & the registry
 
-- The client's login screen shows a **server picker** merged from a static seed
-  (`docs/servers.json`), a live registry, and URLs the user pins — each probed
-  for liveness and latency.
+- The client reads **one registry URL** from `docs/servers.json` on startup (no
+  per-user config), pulls the list of live servers, and treats them all as one
+  pool. A new account is created on the registry host by default; the server
+  picker is tucked under "advanced" for anyone who wants a different home.
+- To start a chat you type a **bare username**. The client probes every known
+  server's public IDS for that name: one match → straight in; several → it asks
+  which one; none → "not found". `name@server` still works explicitly.
 - The **registry** is a directory servers announce to (signed Ed25519
   announcements, first-come name ownership, a URL callback check, stale entries
   dropped). Run it standalone (`npm run registry`) **or** let a server host it:
@@ -142,8 +146,10 @@ required" screen and refuses to sign in.
 
 - **Sign-up + email 2FA** — one form; login sends a code to your email
   (or shows it in the server console until SMTP is set). Trusted devices skip it
-  for 30 days. Keys are generated and published in the background.
-- **Direct messages**, including across servers — address anyone as `user@server`.
+  for 30 days. Keys are generated and published in the background. The client
+  picks your server automatically from the registry.
+- **Direct messages** — type a username; it's found on whichever server it lives
+  on, across servers, with no `@server` to remember.
 - **Group chats**, members freely spanning servers; add/remove members at any
   time (only current members can change membership; new members see only
   post-join messages).

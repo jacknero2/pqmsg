@@ -102,6 +102,32 @@ async function waitHealth(url) {
 
   const H = { alice: alice.myHandle, bob: bob.myHandle, carol: carol.myHandle, dave: dave.myHandle, eve: eve.myHandle };
 
+  // ---- bare-username resolution across all known servers ----
+  console.log('\n── type-a-name discovery ────────────────────────');
+  try {
+    await carol.pinServer({ name: 'B', url: B }); // carol now "knows" both servers
+    const cid = await carol.startConversation('bob'); // bare name -> found only on B
+    assert.strictEqual(cid, pqc.dmConvId(H.carol, H.bob), 'a bare name resolves to the one server that has it');
+
+    const zoeA = await mk('zoe', A);
+    const zoeB = await mk('zoe', B);
+    let err;
+    try {
+      await carol.startConversation('zoe'); // exists on A and B
+    } catch (e) {
+      err = e;
+    }
+    assert.strictEqual(err && err.code, 'AMBIGUOUS', 'a name on multiple servers is reported as ambiguous');
+    assert.strictEqual(err.candidates.length, 2, 'both candidates are offered to disambiguate');
+    const picked = await carol.startConversation(err.candidates.find((c) => c.handle.includes(String(PB))).handle);
+    assert.strictEqual(picked, pqc.dmConvId(H.carol, zoeB.myHandle), 'picking a candidate opens that exact conversation');
+    zoeA.stopLoops();
+    zoeB.stopLoops();
+    ok('type "bob" → resolved; type "zoe" (on 2 servers) → pick which one');
+  } catch (e) {
+    bad('bare-name resolution', e);
+  }
+
   // ---- cross-server DM + acceptance ----
   console.log('\n── cross-server DM + accept/decline ─────────────');
   let dm;

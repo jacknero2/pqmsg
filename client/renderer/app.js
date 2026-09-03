@@ -145,14 +145,23 @@ function renderUpdate(s) {
 }
 
 // ---------- new conversation ----------
-$('btn-open').onclick = openConv;
+$('btn-open').onclick = () => openConv();
 $('in-to').addEventListener('keydown', (e) => e.key === 'Enter' && openConv());
-async function openConv() {
+async function openConv(explicitHandle) {
   const m = $('newconv-msg');
+  $('conv-pick').innerHTML = '';
   m.className = 'msg';
-  m.textContent = 'querying IDS…';
-  const r = await window.pqmsg.startConversation($('in-to').value.trim());
+  m.textContent = 'looking up…';
+  const r = await window.pqmsg.startConversation(explicitHandle || $('in-to').value.trim());
   if (!r.ok) {
+    if (r.code === 'AMBIGUOUS' && r.candidates) {
+      m.textContent = r.error;
+      $('conv-pick').innerHTML = r.candidates
+        .map((c) => `<button class="pick" data-h="${c.handle.replace(/"/g, '&quot;')}">${c.label}</button>`)
+        .join('');
+      for (const b of $('conv-pick').querySelectorAll('.pick')) b.onclick = () => openConv(b.dataset.h);
+      return;
+    }
     m.textContent = r.error;
     return;
   }
@@ -253,6 +262,15 @@ function render() {
   $('app').hidden = !loggedIn;
   if (!loggedIn) {
     renderServerPicker(state);
+    // zero-config: default the account server to the registry host
+    const auto = state.accountServer || '';
+    if (auto && (!$('in-server').value || $('in-server').value === 'http://localhost:8787' || $('in-server').dataset.auto === auto)) {
+      $('in-server').value = auto;
+      $('in-server').dataset.auto = auto;
+    }
+    $('server-auto').textContent = auto
+      ? `your account will be created on ${auto.replace(/^https?:\/\//, '')} (from the registry)`
+      : 'no registry configured — open "advanced" to enter a server address';
     return;
   }
 

@@ -79,6 +79,15 @@ async function probe(url) {
   }
 }
 
+/** the server that hosts the registry (registryUrl minus a trailing /registry path) */
+function registryHost(reg) {
+  try {
+    return new URL(reg).origin.toLowerCase();
+  } catch {
+    return '';
+  }
+}
+
 /** Merge seed + registry + pinned into one deduped list (no probing yet). */
 async function discover({ registryUrl, pinned }) {
   const seed = await getSeed();
@@ -96,10 +105,37 @@ async function discover({ registryUrl, pinned }) {
     const cur = map.get(key) || {};
     map.set(key, { name: cur.name, description: cur.description, ...s, url: key, source: cur.source || source });
   };
+  // the registry host is itself a server clients can use
+  if (reg) add({ url: registryHost(reg), name: 'registry host' }, 'registry');
   seed.servers.forEach((s) => add(s, 'seed'));
   dyn.forEach((s) => add(s, 'registry'));
   (pinned || []).forEach((s) => add(s, 'pinned'));
-  return { registryUrl: reg, servers: [...map.values()] };
+  const servers = [...map.values()];
+  // where a new account should live by default: the registry host, else the only server
+  const accountServer = registryHost(reg) || (servers.length === 1 ? servers[0].url : '') || '';
+  return { registryUrl: reg, registryHost: registryHost(reg), servers, accountServer };
+}
+
+/**
+ * Find which known server(s) a bare username exists on, by probing each server's
+ * public IDS. Returns [{ username, server, deviceCount, safetyNumber }].
+ */
+async function resolveUser(username, serverUrls) {
+  username = String(username || '').trim().toLowerCase();
+  const seen = new Set();
+  const urls = serverUrls.map(trim).filter((u) => u && !seen.has(u) && seen.add(u));
+  const hits = await Promise.all(
+    urls.map(async (server) => {
+      try {
+        const ids = await fetchJson(`${server}/api/ids/${encodeURIComponent(username)}`, 4000);
+        if (!ids || !Array.isArray(ids.devices) || !ids.devices.length) return null;
+        return { username, server, deviceCount: ids.devices.length, safetyNumber: ids.safetyNumber || null };
+      } catch {
+        return null;
+      }
+    })
+  );
+  return hits.filter(Boolean);
 }
 
 /**
@@ -120,4 +156,4 @@ function versionVerdict(current, floor, serverInfo) {
   return { gate, update };
 }
 
-module.exports = { discover, probe, getVersionFloor, versionVerdict, cmpVer, SEED_URL, VERSION_URL };
+module.exports = { discover, probe, resolveUser, getVersionFloor, versionVerdict, cmpVer, SEED_URL, VERSION_URL };

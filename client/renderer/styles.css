@@ -80,6 +80,11 @@ code { color: var(--cyan); word-break: break-all; font-size: 11px; }
 .panel .row button { flex: 1; }
 .panel .hint { color: var(--dim); font-size: 10px; margin-top: 14px; }
 .panel .hint.tight { margin: -6px 0 12px; }
+#server-adv { margin-bottom: 12px; }
+#server-adv > summary { font-size: 10px; color: var(--dim); cursor: pointer; text-transform: uppercase; letter-spacing: 1px; margin-bottom: 8px; }
+#server-auto { color: var(--cyan); }
+#conv-pick { display: inline-flex; flex-wrap: wrap; gap: 6px; }
+#conv-pick .pick { font-size: 11px; padding: 3px 9px; border-radius: 5px; background: #10343a; border: 1px solid #1f6f6a; color: var(--cyan); font-family: var(--mono); cursor: pointer; }
 #twofa { margin-top: 8px; padding-top: 12px; border-top: 1px solid var(--line); }
 #twofa[hidden] { display: none; }
 #twofa #in-code { letter-spacing: 4px; font-size: 16px; text-align: center; }

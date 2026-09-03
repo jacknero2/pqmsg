@@ -134,6 +134,8 @@ class Engine extends EventEmitter {
       appVersion: this.appVersion,
       servers: this.servers,
       registryUrl: this.registryUrl,
+      registryHost: this.registryHost,
+      accountServer: this.accountServer,
       updateGate: this.updateGate,
       updateInfo: this.updateInfo,
     };
@@ -142,11 +144,13 @@ class Engine extends EventEmitter {
   // -- server discovery + version gate --------------------------------
   async discoverServers() {
     const cfg = this.store.loadAppConfig();
-    const { registryUrl, servers } = await disc.discover({
+    const { registryUrl, registryHost, servers, accountServer } = await disc.discover({
       registryUrl: cfg.registryUrl || process.env.PQMSG_REGISTRY_URL,
       pinned: this.store.loadPinnedServers(),
     });
     this.registryUrl = registryUrl;
+    this.registryHost = registryHost;
+    this.accountServer = accountServer;
     // probe all in parallel for liveness / name / version reqs
     const probed = await Promise.all(
       servers.map(async (s) => ({ ...s, ...(await disc.probe(s.url)) }))
@@ -157,6 +161,15 @@ class Engine extends EventEmitter {
     await this.checkVersion(); // a probe may raise the global picture
     this.emit('update');
     return probed;
+  }
+
+  /** every server we might look someone up on */
+  _knownServerUrls() {
+    const s = new Set();
+    if (this.identity && this.identity.serverUrl) s.add(pqc.normServer(this.identity.serverUrl));
+    (this.servers || []).forEach((sv) => sv.url && s.add(pqc.normServer(sv.url)));
+    this.store.loadPinnedServers().forEach((p) => p.url && s.add(pqc.normServer(p.url)));
+    return [...s];
   }
 
   pinServer({ name, url }) {
@@ -390,8 +403,34 @@ class Engine extends EventEmitter {
     return this.store.getContact(handle);
   }
 
-  async startConversation(handleInput) {
-    const other = this._asHandle(handleInput);
+  /**
+   * @param {string} input  a bare "bob" (searched across every known server) or
+   *                         an explicit "bob@server"
+   */
+  async startConversation(input) {
+    const raw = String(input || '').trim();
+    let other;
+    if (raw.includes('@')) {
+      other = this._asHandle(raw);
+    } else {
+      // no server given — find which known server this name lives on
+      const hits = await disc.resolveUser(raw, this._knownServerUrls());
+      const mine = pqc.parseHandle(this.myHandle);
+      const external = hits.filter((h) => !(h.username === mine.username && pqc.normServer(h.server) === mine.server));
+      if (external.length === 0) {
+        throw new Error(`no account named "${raw}" found on the ${this._knownServerUrls().length} known server(s)`);
+      }
+      if (external.length > 1) {
+        const err = new Error(`"${raw}" exists on ${external.length} servers — pick one`);
+        err.code = 'AMBIGUOUS';
+        err.candidates = external.map((h) => ({
+          handle: pqc.formatHandle({ username: h.username, server: h.server }),
+          label: `${h.username} @ ${h.server.replace(/^https?:\/\//, '')}`,
+        }));
+        throw err;
+      }
+      other = pqc.formatHandle({ username: external[0].username, server: external[0].server });
+    }
     if (this.isMe(other)) throw new Error('cannot message yourself');
     const ids = await this.refreshContact(other, true);
     if (!ids.devices.length) throw new Error(`${other} has no enrolled devices yet`);

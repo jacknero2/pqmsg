@@ -60,7 +60,7 @@ app.whenReady().then(async () => {
       try {
         return { ok: true, data: await fn(arg) };
       } catch (err) {
-        return { ok: false, error: err.message };
+        return { ok: false, error: err.message, code: err.code, candidates: err.candidates };
       }
     });
 

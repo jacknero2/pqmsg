@@ -29,16 +29,19 @@
       <div class="panel">
         <h1>pqmsg<span class="cursor">_</span></h1>
         <p class="sub">post-quantum end-to-end messaging · ML-KEM-1024 · ML-DSA-87 · AES-256-GCM</p>
-        <div id="server-picker">
-          <div class="sp-head"><span>pick a server</span><button id="sp-refresh" class="mini" type="button">↻ refresh</button></div>
-          <div id="sp-list" class="sp-list"><span class="dim">discovering…</span></div>
-          <div class="sp-add">
-            <input id="sp-url" placeholder="or paste a server URL" autocomplete="off" />
-            <button id="sp-add-btn" class="mini" type="button">add</button>
+        <p id="server-auto" class="hint tight"></p>
+        <details id="server-adv">
+          <summary>advanced — choose a different home server</summary>
+          <div id="server-picker">
+            <div class="sp-head"><span>servers</span><button id="sp-refresh" class="mini" type="button">↻ refresh</button></div>
+            <div id="sp-list" class="sp-list"><span class="dim">discovering…</span></div>
+            <div class="sp-add">
+              <input id="sp-url" placeholder="paste a server URL" autocomplete="off" />
+              <button id="sp-add-btn" class="mini" type="button">add</button>
+            </div>
           </div>
-        </div>
-        <label>server<input id="in-server" value="http://localhost:8787" /></label>
-        <p class="hint tight">from the list above, or the address someone gave you — an <code>https://…trycloudflare.com</code> link or <code>http://their-lan-ip:8787</code></p>
+          <label>server<input id="in-server" value="http://localhost:8787" /></label>
+        </details>
         <label>username<input id="in-user" placeholder="alice" autocomplete="off" /></label>
         <label>email<input id="in-email" type="email" placeholder="you@example.com — for login codes" autocomplete="off" /></label>
         <label>password<input id="in-pass" type="password" placeholder="••••••" /></label>
@@ -82,6 +85,7 @@
         <button id="btn-open" class="primary sm">open</button>
         <button id="btn-group" class="ghost sm">＋ group</button>
         <span id="newconv-msg" class="msg"></span>
+        <span id="conv-pick"></span>
       </div>
       <div id="groupbar" hidden>
         <span class="prompt">group:</span>
