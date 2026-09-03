@@ -14,6 +14,7 @@ $('btn-register').onclick = async () => {
   const r = await window.pqmsg.register({
     serverUrl: $('in-server').value.trim(),
     username: $('in-user').value.trim(),
+    email: $('in-email').value.trim(),
     password: $('in-pass').value,
   });
   if (r.ok) {
@@ -26,7 +27,7 @@ $('btn-register').onclick = async () => {
 $('btn-login').onclick = async () => {
   const m = $('login-msg');
   m.className = 'msg';
-  m.textContent = 'logging in & generating device keys…';
+  m.textContent = 'checking password…';
   const r = await window.pqmsg.login({
     serverUrl: $('in-server').value.trim(),
     username: $('in-user').value.trim(),
@@ -35,11 +36,42 @@ $('btn-login').onclick = async () => {
   });
   if (!r.ok) {
     m.textContent = r.error;
+    return;
+  }
+  if (r.data.needs2fa) {
+    $('twofa').hidden = false;
+    $('twofa-info').textContent = r.data.dev
+      ? `email not configured on this server — your code is ${r.data.devCode}`
+      : `we emailed a 6-digit code to ${r.data.email}`;
+    if (r.data.dev && r.data.devCode) $('in-code').value = r.data.devCode;
+    $('in-code').focus();
+    m.textContent = '';
   } else {
     m.className = 'msg ok';
     m.textContent = 'enrolled: ' + r.data.deviceId;
   }
 };
+$('btn-2fa-cancel').onclick = () => {
+  $('twofa').hidden = true;
+  $('in-code').value = '';
+};
+$('btn-2fa').onclick = async () => {
+  const m = $('login-msg');
+  m.className = 'msg';
+  m.textContent = 'verifying code & generating device keys…';
+  const r = await window.pqmsg.completeLogin({
+    code: $('in-code').value.trim(),
+    rememberDevice: $('in-remember').checked,
+  });
+  if (!r.ok) {
+    m.textContent = r.error;
+  } else {
+    $('twofa').hidden = true;
+    m.className = 'msg ok';
+    m.textContent = 'enrolled: ' + r.data.deviceId;
+  }
+};
+$('in-code').addEventListener('keydown', (e) => e.key === 'Enter' && $('btn-2fa').click());
 
 // ---------- server picker ----------
 $('sp-refresh').onclick = () => {

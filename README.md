@@ -63,8 +63,13 @@ ML-KEM + ML-DSA is the construction Signal's PQXDH and Apple's iMessage PQ3 use.
 
 ## Design
 
-### Identity
+### Identity & login
 
+- Register with a **username, password and email**. Login is two steps:
+  password → a 6-digit code emailed to that address → session token. SMTP is
+  configured on the server (via env or the Server app); with no SMTP the code is
+  shown in the server console (dev fallback). "Remember this device" issues a
+  signed 30-day token that skips the code on that machine.
 - On first login the client generates its **ML-KEM-1024** and **ML-DSA-87**
   keypairs locally. The private keys never leave the device
   (`~/.pqmsg/<profile>/identity.json` in dev; the OS app-data dir when packaged).
@@ -111,22 +116,33 @@ Not-yet-accepted sends are pinned to the tail. Outgoing bubbles are **light red*
 until a recipient device acks delivery, then **gold**; failed sends turn red.
 Delivery acks retry every cycle until confirmed (the server is idempotent).
 
-### Server discovery & version gates
+### Server discovery & the registry
 
 - The client's login screen shows a **server picker** merged from a static seed
   (`docs/servers.json`), a live registry, and URLs the user pins — each probed
   for liveness and latency.
-- Two update gates, checked on startup and every 6 h: a **global floor**
-  (`docs/version.json` — raise `minSupported` to hard-block old clients) and a
-  **per-server floor** (`PQMSG_MIN_CLIENT`). Below the floor, the client shows an
-  unskippable "update required" screen and refuses to sign in.
+- The **registry** is a directory servers announce to (signed Ed25519
+  announcements, first-come name ownership, a URL callback check, stale entries
+  dropped). Run it standalone (`npm run registry`) **or** let a server host it:
+  a **master user** (`PQMSG_MASTER_EMAIL`, default `jnero@nd.edu`) sets a
+  password, verifies it by email code, and the server then serves the registry
+  at `https://<server>/registry` — no separate service to deploy. The server
+  lists itself and can curate the entry list from the Server app.
+
+### Version gates
+
+Two, checked on startup and every 6 h: a **global floor** (`docs/version.json` —
+raise `minSupported` to hard-block old clients) and a **per-server floor**
+(`PQMSG_MIN_CLIENT`). Below the floor the client shows an unskippable "update
+required" screen and refuses to sign in.
 
 ---
 
 ## Functionality
 
-- **Automatic enrollment** — one sign-up form (server, username, password,
-  device name); keys are generated and published in the background.
+- **Sign-up + email 2FA** — one form; login sends a code to your email
+  (or shows it in the server console until SMTP is set). Trusted devices skip it
+  for 30 days. Keys are generated and published in the background.
 - **Direct messages**, including across servers — address anyone as `user@server`.
 - **Group chats**, members freely spanning servers; add/remove members at any
   time (only current members can change membership; new members see only
@@ -155,6 +171,7 @@ npm install
 npm run e2e            # crypto + single-server round trip
 npm run e2e:registry   # server directory + client discovery + version gates
 npm run e2e:federation # cross-server DMs, groups, membership, auth boundary
+npm run e2e:2fa        # email 2FA + trusted devices + master-registry mode
 ```
 
 | Command | Runs |
@@ -166,9 +183,10 @@ npm run e2e:federation # cross-server DMs, groups, membership, auth boundary
 | `npm run dist` | build installers for the current OS into `dist/` |
 
 Useful env: `PQMSG_PUBLIC=1` (required for any internet-facing server),
-`PQMSG_PUBLIC_URL` (the https URL clients use), `PQMSG_SERVER_NAME` +
-`PQMSG_REGISTRY_URL` + `PQMSG_ANNOUNCE=1` (list in a registry),
-`PQMSG_MIN_CLIENT` (version floor), `STORE_BACKEND=github` (commit the encrypted
+`PQMSG_PUBLIC_URL` (the https URL clients use), `PQMSG_SMTP_*` (send real 2FA
+emails), `PQMSG_MASTER_EMAIL` (who unlocks the built-in registry),
+`PQMSG_SERVER_NAME` + `PQMSG_REGISTRY_URL` + `PQMSG_ANNOUNCE=1` (list in a
+registry), `PQMSG_MIN_CLIENT` (version floor), `STORE_BACKEND=github` (commit the encrypted
 store to a repo instead of local disk). See `.env.example`.
 
 ## Deploy
@@ -183,6 +201,9 @@ built and published automatically by CI on every `v*` tag.
 
 - The local keystore is plaintext on disk — a production build would wrap it with
   an OS keychain or a passphrase-derived key.
+- 2FA proves control of the registered email, not much more; trusted-device
+  tokens are stateless (no per-device revocation yet). Configure real SMTP before
+  opening a server to others — the dev fallback shows codes to the operator.
 - TOFU trust, no key-transparency log — a malicious server or registry can serve
   a wrong key; the defense is out-of-band safety-number comparison.
 - No forward secrecy / ratchet — compromising a device's ML-KEM secret exposes

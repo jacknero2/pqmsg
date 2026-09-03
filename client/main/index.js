@@ -67,6 +67,7 @@ app.whenReady().then(async () => {
   H('pqmsg:snapshot', () => engine.snapshot());
   H('pqmsg:register', (a) => engine.register(a));
   H('pqmsg:login', (a) => engine.login(a));
+  H('pqmsg:completeLogin', (a) => engine.completeLogin(a));
   H('pqmsg:logout', () => engine.logout());
   H('pqmsg:startConversation', (a) => engine.startConversation(a.username));
   H('pqmsg:startGroup', (a) => engine.startGroup(a));

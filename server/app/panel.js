@@ -41,6 +41,9 @@ function renderListing(state) {
   if (!L.listPublicly) {
     st.className = 'note';
     st.textContent = L.publicId ? `id ${L.publicId.slice(0, 16)}…  ·  not listed` : 'not listed';
+  } else if (!L.registryUrl) {
+    st.className = 'note err';
+    st.textContent = 'enter a Registry URL — a running registry service to announce to (optional; leave the box unchecked if you don’t have one)';
   } else if (!state.tunnel.url) {
     st.className = 'note';
     st.textContent = 'turn on the internet tunnel to get listed';
@@ -56,6 +59,81 @@ function renderListing(state) {
   }
 }
 
+// ---- email / SMTP ----
+$('s-save').onclick = async () => {
+  const patch = {
+    smtpHost: $('s-host').value.trim(),
+    smtpPort: $('s-port').value.trim() || '587',
+    smtpUser: $('s-user').value.trim(),
+    smtpFrom: $('s-from').value.trim(),
+  };
+  if ($('s-pass').value) patch.smtpPass = $('s-pass').value;
+  $('s-note').textContent = 'saving…';
+  await window.srv.setSmtp(patch);
+  $('s-pass').value = '';
+  $('s-note').className = 'note ok';
+  $('s-note').textContent = patch.smtpHost ? 'saved — sending real emails' : 'cleared — dev mode (codes in console)';
+};
+function renderSmtp(state) {
+  const mode = state.mailerMode || 'dev';
+  $('mail-mode').textContent = mode;
+  $('mail-mode').className = 'pill' + (mode === 'smtp' ? ' ok' : '');
+  const s = state.smtp || {};
+  const setIf = (id, v) => { if (document.activeElement !== $(id)) $(id).value = v || ''; };
+  setIf('s-host', s.host); setIf('s-port', s.port); setIf('s-user', s.user); setIf('s-from', s.from);
+}
+
+// ---- master registry ----
+let mrChallenge = null;
+$('mr-go').onclick = async () => {
+  const pw = $('mr-pw').value;
+  const note = $('mr-note');
+  note.className = 'note';
+  note.textContent = '…';
+  const hasPw = (window._state && window._state.master && window._state.master.hasPassword);
+  const r = hasPw ? await window.srv.masterLogin(pw) : await window.srv.masterSetup(pw);
+  if (r.error) { note.className = 'note err'; note.textContent = r.error; return; }
+  mrChallenge = r.challengeId;
+  $('mr-code').hidden = false;
+  note.className = 'note';
+  note.textContent = r.dev ? `email not configured — code: ${r.devCode}` : `code sent to ${r.email}`;
+  if (r.dev && r.devCode) $('mr-code-in').value = r.devCode;
+};
+$('mr-verify').onclick = async () => {
+  const r = await window.srv.masterVerify(mrChallenge, $('mr-code-in').value.trim());
+  const note = $('mr-note');
+  if (r.error || r.registryEnabled !== true) { note.className = 'note err'; note.textContent = r.error || 'verification failed'; return; }
+  mrChallenge = null;
+  $('mr-code').hidden = true;
+  $('mr-pw').value = $('mr-code-in').value = '';
+};
+$('mr-disable').onclick = () => window.srv.masterRegistry('disable');
+async function refreshEntries() {
+  if (!window._state || !window._state.master || !window._state.master.unlocked) return;
+  const r = await window.srv.masterRegistry('entries');
+  if (!r || !r.entries) return;
+  $('mr-count').textContent = r.entries.length;
+  $('mr-entries').innerHTML =
+    r.entries.map((e) => `<div class="mr-row">
+      <span>${e.verified ? '<span class="on">●</span>' : '<span class="off">○</span>'} ${esc(e.name)} <span class="dim">${esc(e.url)}</span></span>
+      <button class="mini" data-pid="${esc(e.publicId)}">remove</button></div>`).join('') || '<div class="empty">none yet</div>';
+  for (const b of $('mr-entries').querySelectorAll('button[data-pid]')) b.onclick = () => window.srv.masterRegistry('remove', b.dataset.pid);
+}
+setInterval(refreshEntries, 4000);
+function renderMaster(state) {
+  const m = state.master || {};
+  $('mr-email').textContent = m.email || 'jnero@nd.edu';
+  $('mr-url').textContent = (state.publicUrl || 'https://your-server') + '/registry';
+  $('mr-pw-label').textContent = m.hasPassword ? 'master password' : 'set master password (min 8)';
+  const active = m.registryEnabled && m.unlocked;
+  $('mr-setup').hidden = active;
+  $('mr-active').hidden = !active;
+  if (m.registryEnabled && !m.unlocked) {
+    $('mr-note').className = 'note ok';
+    $('mr-note').textContent = 'registry is ON — log in as master to manage it';
+  }
+}
+
 window.srv.onFatal((m) => {
   $('fatal').hidden = false;
   $('fatal').textContent = 'server error: ' + m;
@@ -66,10 +144,13 @@ setInterval(() => S && render(S), 1000); // refresh "Ns ago"
 
 function render(state) {
   S = state;
+  window._state = state;
   const running = state.running;
   $('dot').className = 'dot' + (running ? ' on' : '');
   $('state-label').textContent = running ? `running · :${state.port}` : 'stopped';
   renderListing(state);
+  renderSmtp(state);
+  renderMaster(state);
 
   // addresses
   const t = state.tunnel;

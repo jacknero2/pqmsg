@@ -59,22 +59,22 @@ class LocalStore {
   // ---- secrets ----------------------------------------------------------
   async getServerSecrets() {
     let s = await this._readJson(this.secretPath, null);
-    if (!s) {
-      s = {
-        tokenSecret: crypto.randomBytes(32).toString('hex'),
-        adminToken: crypto.randomBytes(24).toString('hex'),
-      };
-      await this._writeJson(this.secretPath, s);
+    if (!s) s = {};
+    let dirty = false;
+    for (const k of ['tokenSecret', 'trustSecret', 'masterSecret']) {
+      if (!s[k]) (s[k] = crypto.randomBytes(32).toString('hex')), (dirty = true);
     }
+    if (!s.adminToken) (s.adminToken = crypto.randomBytes(24).toString('hex')), (dirty = true);
+    if (dirty) await this._writeJson(this.secretPath, s);
     return s;
   }
 
   // ---- accounts / IDS -------------------------------------------------
-  async createAccount({ username, salt, hash }) {
+  async createAccount({ username, salt, hash, email }) {
     return this.mutex.run('accounts', async () => {
       const all = await this._readJson(this.accountsPath, {});
       if (all[username]) throw Object.assign(new Error('username taken'), { status: 409 });
-      all[username] = { username, salt, hash, createdAt: Date.now(), devices: {} };
+      all[username] = { username, salt, hash, email: email || null, createdAt: Date.now(), devices: {} };
       await this._writeJson(this.accountsPath, all);
       return all[username];
     });

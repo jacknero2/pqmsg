@@ -7,6 +7,7 @@ contextBridge.exposeInMainWorld('pqmsg', {
   snapshot: () => call('pqmsg:snapshot'),
   register: (a) => call('pqmsg:register', a),
   login: (a) => call('pqmsg:login', a),
+  completeLogin: (a) => call('pqmsg:completeLogin', a),
   logout: () => call('pqmsg:logout'),
   startConversation: (username) => call('pqmsg:startConversation', { username }),
   startGroup: (name, members) => call('pqmsg:startGroup', { name, members }),

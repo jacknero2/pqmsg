@@ -87,8 +87,9 @@ async function waitHealth(url) {
   const mk = async (name, srv) => {
     const e = new Engine(name, undefined, '0.1.0');
     e.on('update', () => {});
-    await e.register({ serverUrl: srv, username: name, password: 'pw123456' });
-    await e.login({ serverUrl: srv, username: name, password: 'pw123456', deviceName: name + '-dev' });
+    await e.register({ serverUrl: srv, username: name, email: `${name}@test.local`, password: 'pw123456' });
+    const r = await e.login({ serverUrl: srv, username: name, password: 'pw123456', deviceName: name + '-dev' });
+    if (r.needs2fa) await e.completeLogin({ code: r.devCode, rememberDevice: true });
     e.stopLoops();
     return e;
   };

@@ -50,6 +50,7 @@ jobs:
       - run: npm run e2e
       - run: npm run e2e:registry
       - run: npm run e2e:federation
+      - run: npm run e2e:2fa
 
       # no GH_TOKEN here on purpose — electron-builder must NOT auto-publish;
       # the single "Publish to GitHub Release" step below is the only uploader

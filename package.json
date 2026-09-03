@@ -1,6 +1,6 @@
 {
   "name": "pqmsg",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "private": true,
   "description": "Post-quantum end-to-end encrypted messenger (iMessage-style) with an inspectable server console",
   "type": "commonjs",
@@ -19,6 +19,7 @@
     "e2e": "node scripts/e2e.js",
     "e2e:registry": "node scripts/e2e-registry.js",
     "e2e:federation": "node scripts/e2e-federation.js",
+    "e2e:2fa": "node scripts/e2e-2fa-master.js",
     "icon": "node scripts/make-icon.js",
     "dist:client": "electron-builder --config build/client.yml --publish never",
     "dist:server": "electron-builder --config build/server.yml --publish never",
@@ -30,6 +31,7 @@
     "@noble/post-quantum": "^0.4.1",
     "@octokit/rest": "^21.1.1",
     "express": "^4.21.2",
+    "nodemailer": "^9.1.1",
     "ws": "^8.18.0"
   },
   "devDependencies": {

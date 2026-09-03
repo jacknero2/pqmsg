@@ -40,11 +40,14 @@ class Api {
   }
 
   // endpoints
-  register(username, password) {
-    return this.post('/api/auth/register', { username, password });
+  register(username, password, email) {
+    return this.post('/api/auth/register', { username, password, email });
   }
-  login(username, password) {
-    return this.post('/api/auth/login', { username, password });
+  login(username, password, trustToken) {
+    return this.post('/api/auth/login', { username, password, trustToken: trustToken || undefined });
+  }
+  verify(challengeId, code, rememberDevice) {
+    return this.post('/api/auth/verify', { challengeId, code, rememberDevice: !!rememberDevice });
   }
   enrollDevice(d) {
     return this.post('/api/devices', d);

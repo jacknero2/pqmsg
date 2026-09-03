@@ -114,14 +114,16 @@ async function waitHealth() {
   alice.on('update', quiet);
   bob.on('update', quiet);
 
+  const enroll = async (e, name, dev) => {
+    await e.register({ serverUrl: S, username: name, email: `${name}@test.local`, password: 'hunter2' });
+    const r = await e.login({ serverUrl: S, username: name, password: 'hunter2', deviceName: dev });
+    if (r.needs2fa) await e.completeLogin({ code: r.devCode, rememberDevice: true }); // dev mode returns the code
+    e.stopLoops();
+  };
   try {
-    await alice.register({ serverUrl: S, username: 'alice', password: 'hunter2' });
-    await bob.register({ serverUrl: S, username: 'bob', password: 'hunter2' });
-    await alice.login({ serverUrl: S, username: 'alice', password: 'hunter2', deviceName: 'alice-laptop' });
-    await bob.login({ serverUrl: S, username: 'bob', password: 'hunter2', deviceName: 'bob-phone' });
-    alice.stopLoops();
-    bob.stopLoops(); // drive sync manually
-    ok('both accounts registered + devices enrolled in IDS');
+    await enroll(alice, 'alice', 'alice-laptop');
+    await enroll(bob, 'bob', 'bob-phone');
+    ok('both accounts registered (with email) + 2FA + devices enrolled in IDS');
   } catch (e) {
     bad('register/login/enroll', e);
   }

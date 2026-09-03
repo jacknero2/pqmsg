@@ -115,24 +115,25 @@ class GitHubStore {
     const fs = require('fs');
     const os = require('os');
     const p = path.join(os.homedir(), '.pqmsg-server-secret.json');
+    let s = {};
     try {
-      return JSON.parse(fs.readFileSync(p, 'utf8'));
-    } catch {
-      const s = {
-        tokenSecret: crypto.randomBytes(32).toString('hex'),
-        adminToken: crypto.randomBytes(24).toString('hex'),
-      };
-      fs.writeFileSync(p, JSON.stringify(s, null, 2));
-      return s;
+      s = JSON.parse(fs.readFileSync(p, 'utf8'));
+    } catch {}
+    let dirty = false;
+    for (const k of ['tokenSecret', 'trustSecret', 'masterSecret']) {
+      if (!s[k]) (s[k] = crypto.randomBytes(32).toString('hex')), (dirty = true);
     }
+    if (!s.adminToken) (s.adminToken = crypto.randomBytes(24).toString('hex')), (dirty = true);
+    if (dirty) fs.writeFileSync(p, JSON.stringify(s, null, 2));
+    return s;
   }
 
   // ---- accounts / IDS -------------------------------------------------
-  async createAccount({ username, salt, hash }) {
+  async createAccount({ username, salt, hash, email }) {
     return this.mutex.run('accounts', async () => {
       const all = (await this._getJson('accounts.json')) || {};
       if (all[username]) throw Object.assign(new Error('username taken'), { status: 409 });
-      all[username] = { username, salt, hash, createdAt: Date.now(), devices: {} };
+      all[username] = { username, salt, hash, email: email || null, createdAt: Date.now(), devices: {} };
       await this._putJson('accounts.json', all, `pqmsg: register ${username}`);
       return all[username];
     });

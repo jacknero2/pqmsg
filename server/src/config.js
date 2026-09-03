@@ -40,6 +40,22 @@ const config = {
   minClient: process.env.PQMSG_MIN_CLIENT || '', // clients below this are hard-blocked from this server
   latestClient: process.env.PQMSG_LATEST_CLIENT || '', // newest known; clients below get a soft "update available"
   clientDownloadUrl: process.env.PQMSG_DOWNLOAD_URL || 'https://jacknero2.github.io/pqmsg/',
+
+  // --- email 2FA on login (SMTP via nodemailer; dev fallback if unset) ---
+  smtpHost: process.env.PQMSG_SMTP_HOST || '',
+  smtpPort: process.env.PQMSG_SMTP_PORT || '587',
+  smtpUser: process.env.PQMSG_SMTP_USER || '',
+  smtpPass: process.env.PQMSG_SMTP_PASS || '',
+  smtpFrom: process.env.PQMSG_SMTP_FROM || '',
+  smtpSecure: /^(1|true|yes)$/i.test(process.env.PQMSG_SMTP_SECURE || ''),
+  trustedDeviceDays: parseInt(process.env.PQMSG_TRUST_DAYS || '30', 10),
+
+  // --- master registry: this server can host the directory itself ---
+  masterEmail: (process.env.PQMSG_MASTER_EMAIL || 'jnero@nd.edu').toLowerCase(),
+
+  // federation SSRF knobs (also read directly by federation.js / registry)
+  fedAllowInsecure: /^(1|true|yes)$/i.test(process.env.PQMSG_FED_ALLOW_INSECURE || ''),
+  fedTrustAll: /^(1|true|yes)$/i.test(process.env.PQMSG_FED_TRUST_ALL || ''),
 };
 
 module.exports = { config };

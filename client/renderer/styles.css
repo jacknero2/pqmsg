@@ -80,6 +80,11 @@ code { color: var(--cyan); word-break: break-all; font-size: 11px; }
 .panel .row button { flex: 1; }
 .panel .hint { color: var(--dim); font-size: 10px; margin-top: 14px; }
 .panel .hint.tight { margin: -6px 0 12px; }
+#twofa { margin-top: 8px; padding-top: 12px; border-top: 1px solid var(--line); }
+#twofa[hidden] { display: none; }
+#twofa #in-code { letter-spacing: 4px; font-size: 16px; text-align: center; }
+.panel label.chk { display: flex; align-items: center; gap: 8px; font-size: 11px; color: var(--ink); text-transform: none; cursor: pointer; }
+.panel label.chk input { width: auto; margin: 0; }
 .cursor { animation: blink 1s steps(1) infinite; color: var(--cyan); }
 @keyframes blink { 50% { opacity: 0; } }
 .kv { display: flex; gap: 10px; font-size: 11px; margin: 8px 0; }

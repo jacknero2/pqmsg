@@ -188,17 +188,24 @@ class Engine extends EventEmitter {
   }
 
   // -- account lifecycle -------------------------------------------------
-  async register({ serverUrl, username, password }) {
+  async register({ serverUrl, username, password, email }) {
     const api = new Api(serverUrl);
-    await api.register(norm(username), password);
+    await api.register(norm(username), password, String(email || '').trim().toLowerCase());
     this.event('register', { username: norm(username) });
     return { ok: true };
   }
 
+  _trustKey(serverUrl) {
+    return pqc.normServer(serverUrl);
+  }
+
+  /**
+   * Login step 1: password. Returns either
+   *   { needs2fa: true, challengeId, email, dev, devCode? }  -> call completeLogin
+   *   { ok: true, deviceId }                                  -> trusted device, done
+   */
   async login({ serverUrl, username, password, deviceName }) {
     username = norm(username);
-
-    // version gate — refuse to enroll against a server that requires a newer client
     const info = await disc.probe(serverUrl).catch(() => null);
     const gate = await this.checkVersion(info || undefined);
     if (gate) {
@@ -206,16 +213,42 @@ class Engine extends EventEmitter {
       err.code = 'UPDATE_REQUIRED';
       throw err;
     }
+    if (this.identity && norm(this.identity.username) !== username) {
+      throw new Error(`profile "${this.store.profile}" is already bound to @${this.identity.username}; use a different PQMSG_PROFILE`);
+    }
 
     const api = new Api(serverUrl);
-    const { token } = await api.login(username, password);
-    api.setToken(token);
+    const trustToken = (this.store.loadAppConfig().trust || {})[this._trustKey(serverUrl)] || null;
+    const r = await api.login(username, password, trustToken);
 
-    // reuse existing identity keys for this profile if present & same user
-    let id = this.identity;
-    if (id && norm(id.username) !== username) {
-      throw new Error(`profile "${this.store.profile}" is already bound to @${id.username}; use a different PQMSG_PROFILE`);
+    if (r.token) {
+      // trusted device (or legacy no-email account) — straight through
+      return this._finishLogin({ serverUrl, username, deviceName, token: r.token });
     }
+    // needs a code
+    this._pending2fa = { serverUrl, username, deviceName, challengeId: r.challengeId };
+    return { needs2fa: true, challengeId: r.challengeId, email: r.email, dev: !!r.dev, devCode: r.devCode || null };
+  }
+
+  /** Login step 2: the emailed code (+ optional 30-day remember-this-device). */
+  async completeLogin({ code, rememberDevice }) {
+    const p = this._pending2fa;
+    if (!p) throw new Error('no login in progress');
+    const api = new Api(p.serverUrl);
+    const r = await api.verify(p.challengeId, code, !!rememberDevice);
+    if (rememberDevice && r.trustToken) {
+      const cfg = this.store.loadAppConfig();
+      const trust = { ...(cfg.trust || {}), [this._trustKey(p.serverUrl)]: r.trustToken };
+      this.store.saveAppConfig({ trust });
+    }
+    this._pending2fa = null;
+    return this._finishLogin({ serverUrl: p.serverUrl, username: p.username, deviceName: p.deviceName, token: r.token });
+  }
+
+  /** shared tail of both login paths: (re)enroll this device and start syncing */
+  async _finishLogin({ serverUrl, username, deviceName, token }) {
+    const api = new Api(serverUrl, token);
+    let id = this.identity;
     if (!id) {
       const keys = pqc.generateIdentity();
       id = {
@@ -228,7 +261,6 @@ class Engine extends EventEmitter {
     id.serverUrl = serverUrl;
     id.token = token;
 
-    // enroll / re-assert this device in the IDS
     const attestation = pqc.signEnrollment(id, { username, deviceName: id.deviceName });
     const { deviceId } = await api.enrollDevice({
       deviceName: id.deviceName,

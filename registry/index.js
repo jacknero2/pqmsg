@@ -38,7 +38,8 @@ const cfg = {
 const NAME_RE = /^[\w][\w .\-]{0,39}$/;
 const REVERIFY_MS = 10 * 60 * 1000;
 
-function createRegistry(overrides = {}) {
+/** Build the registry Express app + state without listening (mountable into another server). */
+function buildRegistryApp(overrides = {}) {
   Object.assign(cfg, overrides);
   const dataFile = path.join(cfg.dataDir, 'registry-data.json');
   fs.mkdirSync(cfg.dataDir, { recursive: true });
@@ -226,16 +227,21 @@ function createRegistry(overrides = {}) {
   }, 60000);
   gc.unref();
 
+  return { app, entries, owners, save, stopGc: () => clearInterval(gc) };
+}
+
+/** Standalone registry service (listens on its own port). */
+function createRegistry(overrides = {}) {
+  const built = buildRegistryApp(overrides);
   let server;
   return {
-    app,
-    entries,
+    ...built,
     start: () =>
       new Promise((resolve, reject) => {
-        server = app
+        server = built.app
           .listen(cfg.port, cfg.host, () => {
             if (!cfg.quiet) {
-              console.log(`pqmsg registry  ·  ${cfg.host}:${cfg.port}  ·  data ${cfg.dataDir}  ·  ${entries.size} known`);
+              console.log(`pqmsg registry  ·  ${cfg.host}:${cfg.port}  ·  data ${cfg.dataDir}  ·  ${built.entries.size} known`);
             }
             resolve({ port: cfg.port, host: cfg.host, url: `http://localhost:${cfg.port}` });
           })
@@ -245,7 +251,7 @@ function createRegistry(overrides = {}) {
   };
 }
 
-module.exports = { createRegistry, cfg };
+module.exports = { createRegistry, buildRegistryApp, cfg };
 
 if (require.main === module) {
   createRegistry()

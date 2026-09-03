@@ -21,19 +21,23 @@ const { Presence } = require('./presence');
 const { createStore } = require('../../shared/store');
 const { RegistryAnnouncer, loadServerIdentity } = require('./registry-client');
 const fed = require('./federation');
+const master = require('./master');
 const proto = require('../../shared/protocol');
 const pqc = require('../../shared/crypto');
+const { createMailer, maskEmail } = require('../../shared/email');
+const { ChallengeStore, issueTrust, checkTrust } = require('../../shared/twofa');
 const crypto2 = require('crypto');
 const PKG_VERSION = require('../../package.json').version;
 
 const handleHash = (h) => crypto2.createHash('sha256').update(pqc.normHandle(h)).digest('hex').slice(0, 32);
+const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 
 const app = express();
 app.use(express.json({ limit: '4mb' }));
 app.use((req, res, next) => {
   res.set('Access-Control-Allow-Origin', '*');
-  res.set('Access-Control-Allow-Headers', 'Content-Type, Authorization, X-Admin-Token');
-  res.set('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
+  res.set('Access-Control-Allow-Headers', 'Content-Type, Authorization, X-Admin-Token, X-Master-Token, X-PQMSG-Auth');
+  res.set('Access-Control-Allow-Methods', 'GET, POST, DELETE, OPTIONS');
   if (req.method === 'OPTIONS') return res.sendStatus(204);
   next();
 });
@@ -43,6 +47,25 @@ let store;
 let SECRETS;
 let serverIdentity = null; // Ed25519 registry identity (for /api/serverinfo + announcing)
 let announcer = null;
+let mailer = createMailer({}); // replaced with configured transport at boot
+const challenges = new ChallengeStore();
+/** surfaced 2FA codes when email isn't configured (dev mode) — id -> {code, at} */
+const devCodes = new Map();
+function recordDevCode(id, code) {
+  devCodes.set(id, { code, at: Date.now() });
+  if (devCodes.size > 50) devCodes.delete(devCodes.keys().next().value);
+}
+
+async function sendCode({ id, code, to, subject }) {
+  if (mailer.mode === 'smtp') {
+    await mailer.send({ to, subject, text: `Your pqmsg verification code is ${code}\n\nIt expires in 10 minutes. If you did not request this, ignore this email.` });
+    return { dev: false };
+  }
+  recordDevCode(id, code);
+  console.log(`\n  [2FA · email not configured] code for ${to}: \x1b[1m${code}\x1b[0m\n`);
+  presence.log('twofa-dev', { to: maskEmail(to), code });
+  return { dev: true, devCode: code };
+}
 
 // --------------------------------------------------------------------------
 // helpers
@@ -134,15 +157,18 @@ app.post(
   wrap(async (req, res) => {
     const username = proto.normUser(req.body.username);
     const password = String(req.body.password || '');
+    const email = String(req.body.email || '').trim().toLowerCase();
     if (!proto.USERNAME_RE.test(username)) throw Object.assign(new Error('bad username'), { status: 400 });
     if (password.length < 6) throw Object.assign(new Error('password too short'), { status: 400 });
+    if (!EMAIL_RE.test(email)) throw Object.assign(new Error('a valid email is required (used for login codes)'), { status: 400 });
     const { salt, hash } = proto.hashPassword(password);
-    await store.createAccount({ username, salt, hash });
-    presence.log('register', { username });
+    await store.createAccount({ username, salt, hash, email });
+    presence.log('register', { username, email: maskEmail(email) });
     res.json({ ok: true, username });
   })
 );
 
+// step 1: password -> emailed code (or straight to a token if this device is trusted)
 app.post(
   '/api/auth/login',
   wrap(async (req, res) => {
@@ -152,8 +178,38 @@ app.post(
     if (!acct || !proto.verifyPassword(password, acct.salt, acct.hash)) {
       throw Object.assign(new Error('invalid credentials'), { status: 401 });
     }
+    if (req.body.trustToken && checkTrust(SECRETS.trustSecret, req.body.trustToken, username)) {
+      const token = proto.issueToken(SECRETS.tokenSecret, { username });
+      presence.log('login', { username, via: 'trusted-device' });
+      return res.json({ token, username });
+    }
+    if (!acct.email) {
+      // legacy account with no email on file — allow through, no 2FA possible
+      const token = proto.issueToken(SECRETS.tokenSecret, { username });
+      return res.json({ token, username, note: 'no email on file — 2FA skipped' });
+    }
+    const { id, code } = challenges.create('login', username, { username });
+    const surf = await sendCode({ id, code, to: acct.email, subject: 'pqmsg login code' });
+    presence.log('login-code', { username, email: maskEmail(acct.email), dev: surf.dev });
+    res.json({ needs2fa: true, challengeId: id, email: maskEmail(acct.email), ...surf });
+  })
+);
+
+// step 2: code -> session token (+ optional 30-day trusted-device token)
+app.post(
+  '/api/auth/verify',
+  wrap(async (req, res) => {
+    const r = challenges.verify(String(req.body.challengeId || ''), String(req.body.code || ''));
+    if (!r.ok) {
+      const status = r.error === 'bad_code' ? 401 : r.error === 'too_many_attempts' ? 429 : 400;
+      throw Object.assign(new Error(r.error), { status, attemptsLeft: r.attemptsLeft });
+    }
+    const username = r.meta.username;
     const token = proto.issueToken(SECRETS.tokenSecret, { username });
-    res.json({ token, username });
+    const out = { token, username };
+    if (req.body.rememberDevice) out.trustToken = issueTrust(SECRETS.trustSecret, username, config.trustedDeviceDays);
+    presence.log('login', { username, via: '2fa' });
+    res.json(out);
   })
 );
 
@@ -488,16 +544,114 @@ app.get('/api/serverinfo', (req, res) =>
     publicId: serverIdentity ? serverIdentity.publicId : null,
     publicUrl: config.serverPublicUrl || null,
     federation: true,
+    isRegistry: !!(masterState && masterState.registryEnabled),
+    registryPath: masterState && masterState.registryEnabled ? '/registry' : null,
     serverVersion: PKG_VERSION,
     backend: store ? store.kind : null,
     clients: presence.list().length,
-    // client update gate — operator sets PQMSG_MIN_CLIENT / PQMSG_LATEST_CLIENT
     minClient: config.minClient || null,
     latestClient: config.latestClient || null,
     downloadUrl: config.clientDownloadUrl,
     time: Date.now(),
   })
 );
+
+// --------------------------------------------------------------------------
+// master registry: this server can also BE the directory
+// --------------------------------------------------------------------------
+let masterState = null; // Master instance
+let registryMounted = null; // { app, entries, owners } from buildRegistryApp
+
+function mountRegistry() {
+  if (registryMounted) return;
+  const { buildRegistryApp } = require('../../registry');
+  registryMounted = buildRegistryApp({
+    dataDir: path.join(config.dataDir, 'registry'),
+    allowInsecure: config.fedAllowInsecure,
+    trustAllUrls: config.fedTrustAll,
+    quiet: true,
+  });
+  app.use('/registry', registryMounted.app);
+  presence.log('registry-mounted', { at: '/registry' });
+}
+
+const requireMaster = (req, res, next) => {
+  const tok = req.get('x-master-token') || req.query.master;
+  const b = tok && proto.verifyToken(SECRETS.masterSecret, tok);
+  if (!b || b.t !== 'master') return res.status(403).json({ error: 'master auth required' });
+  next();
+};
+
+app.get('/api/master/status', wrap(async (req, res) => res.json(masterState.status())));
+
+app.post(
+  '/api/master/setup',
+  wrap(async (req, res) => {
+    if (masterState.hasPassword) throw Object.assign(new Error('master password already set — use /login'), { status: 409 });
+    const password = String(req.body.password || '');
+    if (password.length < 8) throw Object.assign(new Error('master password must be >= 8 chars'), { status: 400 });
+    masterState.setPassword(password);
+    const { id, code } = challenges.create('master', masterState.email, {});
+    const surf = await sendCode({ id, code, to: masterState.email, subject: 'pqmsg master registry — verify' });
+    presence.log('master-setup', { email: maskEmail(masterState.email), dev: surf.dev });
+    res.json({ needs2fa: true, challengeId: id, email: maskEmail(masterState.email), ...surf });
+  })
+);
+
+app.post(
+  '/api/master/login',
+  wrap(async (req, res) => {
+    if (!masterState.hasPassword) throw Object.assign(new Error('no master password set — use /setup'), { status: 409 });
+    if (!masterState.verifyPassword(String(req.body.password || ''))) {
+      throw Object.assign(new Error('invalid master password'), { status: 401 });
+    }
+    const { id, code } = challenges.create('master', masterState.email, {});
+    const surf = await sendCode({ id, code, to: masterState.email, subject: 'pqmsg master registry — login code' });
+    res.json({ needs2fa: true, challengeId: id, email: maskEmail(masterState.email), ...surf });
+  })
+);
+
+app.post(
+  '/api/master/verify',
+  wrap(async (req, res) => {
+    const r = challenges.verify(String(req.body.challengeId || ''), String(req.body.code || ''));
+    if (!r.ok) {
+      const status = r.error === 'bad_code' ? 401 : r.error === 'too_many_attempts' ? 429 : 400;
+      throw Object.assign(new Error(r.error), { status });
+    }
+    masterState.setRegistryEnabled(true);
+    mountRegistry();
+    const masterToken = proto.issueToken(SECRETS.masterSecret, { t: 'master' }, 24 * 3600 * 1000);
+    presence.log('master-login', {});
+    res.json({ masterToken, registryEnabled: true, registryUrl: (config.serverPublicUrl || '') + '/registry' });
+  })
+);
+
+app.post('/api/master/registry/disable', requireMaster, wrap(async (req, res) => {
+  masterState.setRegistryEnabled(false);
+  res.json({ ok: true, registryEnabled: false });
+}));
+app.post('/api/master/registry/enable', requireMaster, wrap(async (req, res) => {
+  masterState.setRegistryEnabled(true);
+  mountRegistry();
+  res.json({ ok: true, registryEnabled: true });
+}));
+app.get('/api/master/registry/entries', requireMaster, wrap(async (req, res) => {
+  const list = registryMounted ? [...registryMounted.entries.values()].map((e) => ({
+    name: e.name, url: e.url, publicId: e.publicId, verified: !!e.verified, lastSeen: e.lastSeen, lastVerifyErr: e.lastVerifyErr || null,
+  })) : [];
+  res.json({ registryEnabled: masterState.registryEnabled, entries: list });
+}));
+app.post('/api/master/registry/remove', requireMaster, wrap(async (req, res) => {
+  const pid = String(req.body.publicId || '');
+  if (registryMounted && registryMounted.entries.has(pid)) {
+    const e = registryMounted.entries.get(pid);
+    registryMounted.entries.delete(pid);
+    registryMounted.owners.delete(e.name.toLowerCase());
+    registryMounted.save();
+  }
+  res.json({ ok: true });
+}));
 
 app.use('/', express.static(path.join(__dirname, '..', 'public')));
 
@@ -590,6 +744,10 @@ async function startServer(overrides = {}) {
   SECRETS = await store.getServerSecrets();
   const adminToken = config.adminToken || SECRETS.adminToken;
 
+  mailer = createMailer(config);
+  masterState = new master.Master(config.dataDir, config.masterEmail);
+  if (masterState.registryEnabled) mountRegistry(); // survives restarts
+
   await new Promise((resolve, reject) => {
     const onErr = (e) => reject(e);
     server.once('error', onErr);
@@ -643,6 +801,9 @@ async function startServer(overrides = {}) {
     startAnnouncing,
     stopAnnouncing,
     setServerInfo,
+    mailerMode: () => mailer.mode,
+    masterStatus: () => masterState.status(),
+    registryEntryCount: () => (registryMounted ? registryMounted.entries.size : 0),
     close: async () => {
       await stopAnnouncing();
       await new Promise((r) => server.close(r));
@@ -674,6 +835,12 @@ function setServerInfo(patch = {}) {
   if (patch.url !== undefined) config.serverPublicUrl = patch.url;
   if (patch.minClient !== undefined) config.minClient = patch.minClient;
   if (patch.latestClient !== undefined) config.latestClient = patch.latestClient;
+  if (['smtpHost', 'smtpPort', 'smtpUser', 'smtpPass', 'smtpFrom', 'smtpSecure'].some((k) => patch[k] !== undefined)) {
+    for (const k of ['smtpHost', 'smtpPort', 'smtpUser', 'smtpPass', 'smtpFrom', 'smtpSecure']) {
+      if (patch[k] !== undefined) config[k] = patch[k];
+    }
+    mailer = createMailer(config);
+  }
   if (announcer) {
     announcer.setInfo({
       name: config.serverName,

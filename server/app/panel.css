@@ -45,6 +45,14 @@ button.mini { padding: 2px 8px; font-size: 10px; }
 .kv span { color: var(--dim); min-width: 90px; }
 .kv code { color: var(--cyan); word-break: break-all; flex: 1; }
 .pill { background: #12202a; color: var(--cyan); border: 1px solid var(--line); border-radius: 10px; padding: 0 7px; font-size: 10px; }
+.pill.ok { color: var(--gold); border-color: var(--gold); }
+.on { color: var(--cyan); } .off { color: var(--dim); }
+.empty { color: var(--dim); font-size: 11px; padding: 6px; }
+#s-port-l { flex: 0 0 90px; }
+.fld-grow { flex: 1; }
+.mr-entries { max-height: 120px; margin-top: 6px; }
+.mr-row { display: flex; justify-content: space-between; align-items: center; margin: 2px 0; font-size: 11px; gap: 8px; }
+.mr-row .mini { padding: 1px 7px; font-size: 10px; }
 
 .scroll { flex: 1; overflow-y: auto; border: 1px solid var(--line); border-radius: 7px; background: #0a0f15; padding: 4px; }
 .scroll.mono { font-size: 10.5px; color: #5f7688; }

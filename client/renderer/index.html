@@ -40,6 +40,7 @@
         <label>server<input id="in-server" value="http://localhost:8787" /></label>
         <p class="hint tight">from the list above, or the address someone gave you — an <code>https://…trycloudflare.com</code> link or <code>http://their-lan-ip:8787</code></p>
         <label>username<input id="in-user" placeholder="alice" autocomplete="off" /></label>
+        <label>email<input id="in-email" type="email" placeholder="you@example.com — for login codes" autocomplete="off" /></label>
         <label>password<input id="in-pass" type="password" placeholder="••••••" /></label>
         <label>device name<input id="in-device" placeholder="(auto)" /></label>
         <div class="row">
@@ -47,6 +48,18 @@
           <button id="btn-login" class="primary">login &amp; enroll</button>
         </div>
         <p id="login-msg" class="msg"></p>
+
+        <!-- 2FA code step -->
+        <div id="twofa" hidden>
+          <p class="hint" id="twofa-info"></p>
+          <label>verification code<input id="in-code" inputmode="numeric" maxlength="6" placeholder="123456" autocomplete="off" /></label>
+          <label class="chk"><input id="in-remember" type="checkbox" checked /> remember this device for 30 days</label>
+          <div class="row">
+            <button id="btn-2fa-cancel" class="ghost">cancel</button>
+            <button id="btn-2fa" class="primary">verify</button>
+          </div>
+        </div>
+
         <p class="hint">a device keypair is generated locally on first login; the private half never leaves this machine.</p>
       </div>
     </section>
