@@ -35,7 +35,7 @@ const cfg = {
   quiet: bool(process.env.PQMSG_REGISTRY_QUIET),
 };
 
-const NAME_RE = /^[\w][\w .\-]{0,39}$/;
+const NAME_RE = /^[\w][\w '.,!&()\-]{0,47}$/; // letters/digits + common punctuation, 2–48 chars
 const REVERIFY_MS = 10 * 60 * 1000;
 
 /** Build the registry Express app + state without listening (mountable into another server). */
