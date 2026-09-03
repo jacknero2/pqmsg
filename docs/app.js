@@ -6,11 +6,16 @@ const $ = (s) => document.querySelector(s);
 const mb = (n) => (n / 1048576).toFixed(1) + ' MB';
 
 function detectOS() {
+  const ua = navigator.userAgent || '';
   const p = (navigator.userAgentData && navigator.userAgentData.platform) || navigator.platform || '';
-  const ua = navigator.userAgent;
-  if (/mac/i.test(p) || /Mac OS X/.test(ua)) return 'mac';
-  if (/win/i.test(p) || /Windows/.test(ua)) return 'win';
-  if (/linux/i.test(p) || /Linux/.test(ua)) return 'linux';
+  const touch = navigator.maxTouchPoints || 0;
+  // mobile first — note iOS UA contains "like Mac OS X", and iPadOS reports "MacIntel"
+  if (/iPhone|iPod/.test(ua)) return 'ios';
+  if (/iPad/.test(ua) || (p === 'MacIntel' && touch > 1)) return 'ios';
+  if (/Android/.test(ua)) return 'android';
+  if (/Macintosh|Mac OS X/.test(ua) || /mac/i.test(p)) return 'mac';
+  if (/Windows/.test(ua) || /win/i.test(p)) return 'win';
+  if (/Linux/.test(ua) || /linux/i.test(p)) return 'linux';
   return '';
 }
 
@@ -75,8 +80,17 @@ function renderGroup(el, assets, myOS) {
     renderGroup($('#client-buttons'), client, myOS);
     renderGroup($('#server-buttons'), server, myOS);
 
-    const hint = { mac: 'Detected macOS — pick Apple Silicon for M1–M4 Macs, Intel for older ones.', win: 'Detected Windows.', linux: 'Detected Linux.' }[myOS];
-    if (hint) $('#client-os-hint').textContent = hint;
+    const hint = {
+      mac: 'Detected macOS — pick Apple Silicon for M1–M4 Macs, Intel for older ones.',
+      win: 'Detected Windows.',
+      linux: 'Detected Linux.',
+      ios: 'You’re on iOS — there’s no iPhone/iPad build. Install pqmsg on a Mac, Windows or Linux computer.',
+      android: 'You’re on Android — there’s no Android build yet. Install pqmsg on a computer.',
+    }[myOS];
+    if (hint) {
+      $('#client-os-hint').textContent = hint;
+      if (myOS === 'ios' || myOS === 'android') $('#client-os-hint').style.color = 'var(--dim)';
+    }
   } catch (e) {
     const msg =
       e.message === '404'
