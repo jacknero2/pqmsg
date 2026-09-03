@@ -53,6 +53,17 @@ function lanAddresses() {
   return out;
 }
 
+let _wiredAnn = null;
+/** the announcer is created lazily by reconcileAnnounce — hook its updates once it exists */
+function wireAnnouncer() {
+  if (!server || !server.getAnnouncer) return;
+  const ann = server.getAnnouncer();
+  if (ann && ann !== _wiredAnn) {
+    _wiredAnn = ann;
+    ann.onUpdate(() => pushState());
+  }
+}
+
 /** Point the server + announcer at the current public URL / listing config. */
 function reconcileAnnounce() {
   if (!server) return;
@@ -79,6 +90,7 @@ function reconcileAnnounce() {
   } else {
     server.stopAnnouncing();
   }
+  wireAnnouncer();
 }
 
 function snapshot() {
@@ -139,10 +151,9 @@ async function startBackend() {
       smtpSecure: appCfg.smtpSecure,
     });
     server.presence.onBroadcast(() => pushState());
-    const ann = server.getAnnouncer && server.getAnnouncer();
-    if (ann) ann.onUpdate(() => pushState());
     console.log(`[pqmsg-server] listening on :${PORT}  data=${dataDir()}`);
     reconcileAnnounce();
+    wireAnnouncer();
     pushState();
   } catch (e) {
     console.error('[pqmsg-server] failed to start:', e);
@@ -193,6 +204,8 @@ if (!app.requestSingleInstanceLock()) {
     await startBackend().catch((e) => {
       if (win) win.webContents.send('fatal', e.message);
     });
+    // keep the panel in sync with live server state (announce status, peers, …)
+    setInterval(pushState, 3000);
 
     ipcMain.handle('get-state', () => snapshot());
     ipcMain.handle('start', () => startBackend().then(snapshot));
