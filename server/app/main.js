@@ -64,9 +64,11 @@ function reconcileAnnounce() {
     minClient: appCfg.minClient,
     latestClient: appCfg.latestClient,
   });
-  // if this server runs its own registry, list itself there by default
+  // if this server runs its own registry, always announce to ITS OWN /registry
+  // (whatever the operator typed in the field can't be right for self-listing)
   const m = server.masterStatus ? server.masterStatus() : {};
-  const regUrl = appCfg.registryUrl || (m.registryEnabled && publicUrl ? publicUrl + '/registry' : '');
+  const selfReg = m.registryEnabled && publicUrl ? publicUrl.replace(/\/+$/, '') + '/registry' : '';
+  const regUrl = selfReg || appCfg.registryUrl;
   const canAnnounce = appCfg.listPublicly && appCfg.name && regUrl && tunnel.url;
   if (canAnnounce) {
     try {

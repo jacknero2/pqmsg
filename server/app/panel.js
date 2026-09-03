@@ -30,17 +30,29 @@ function renderListing(state) {
   const fill = (id, v) => { const el = $(id); if (v && !el.value && document.activeElement !== el) el.value = v; };
   fill('l-name', L.name);
   fill('l-desc', L.description);
-  fill('l-registry', L.registryUrl);
   fill('l-min', L.minClient);
   fill('l-latest', L.latestClient);
   if (document.activeElement !== $('l-on')) $('l-on').checked = !!L.listPublicly;
+
+  // when this server hosts its own registry, the URL is fixed to its own /registry
+  const selfReg = state.master && state.master.registryEnabled;
+  const reg = $('l-registry');
+  if (selfReg) {
+    reg.value = (state.publicUrl || '') + '/registry';
+    reg.disabled = true;
+    reg.title = 'this server is its own registry';
+  } else {
+    reg.disabled = false;
+    fill('l-registry', L.registryUrl);
+  }
+  const effReg = selfReg ? (state.publicUrl || '') + '/registry' : L.registryUrl;
 
   const a = L.announce;
   const st = $('l-status');
   if (!L.listPublicly) {
     st.className = 'note';
     st.textContent = L.publicId ? `id ${L.publicId.slice(0, 16)}…  ·  not listed` : 'not listed';
-  } else if (!L.registryUrl) {
+  } else if (!effReg) {
     st.className = 'note err';
     st.textContent = 'enter a Registry URL — a running registry service to announce to (optional; leave the box unchecked if you don’t have one)';
   } else if (!state.tunnel.url) {

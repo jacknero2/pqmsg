@@ -1,6 +1,6 @@
 {
   "name": "pqmsg",
-  "version": "0.3.2",
+  "version": "0.3.3",
   "private": true,
   "description": "Post-quantum end-to-end encrypted messenger (iMessage-style) with an inspectable server console",
   "type": "commonjs",

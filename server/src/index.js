@@ -832,7 +832,7 @@ function startAnnouncing(info) {
   if (!announcer) {
     announcer = new RegistryAnnouncer({ registryUrl, dataDir: config.dataDir, info });
   } else {
-    announcer.setInfo(info);
+    announcer.setInfo({ ...info, registryUrl }); // pick up a changed registry URL
   }
   announcer.start();
   return announcer;

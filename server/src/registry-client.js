@@ -35,7 +35,18 @@ class RegistryAnnouncer {
   snapshot() {
     return { ...this.state, registryUrl: this.registryUrl, name: this.info.name || null, url: this.info.url || null };
   }
+  setRegistryUrl(url) {
+    const next = String(url || '').replace(/\/+$/, '');
+    if (next && next !== this.registryUrl) {
+      this.registryUrl = next;
+      this.state.phase = 'off';
+      this.state.error = null;
+      this.state.verified = false;
+      if (this.timer) this.announce();
+    }
+  }
   setInfo(patch) {
+    if (patch.registryUrl) this.setRegistryUrl(patch.registryUrl);
     Object.assign(this.info, patch);
     if (this.timer) this.announce();
   }
