@@ -446,10 +446,24 @@ class Engine extends EventEmitter {
         msgId: env.msgId, sender: env.sender, senderDevice: env.senderDevice, sentAt: env.sentAt,
         seq: env.seq, prevId: env.prevId, direction: 'in',
         state: verified && ok ? 'received' : 'suspect', verified, text, serverSeq: env.serverSeq,
+        acked: false,
       };
       changed = true;
       this.event('decrypted', { convId: conv.convId, msgId: env.msgId, from: env.sender, verified });
-      this.api.ackDelivered(conv.convId, env.msgId, this.identity.deviceId).catch(() => {});
+    }
+
+    // --- delivery acks: retry every cycle until confirmed (server is idempotent) ---
+    for (const m of Object.values(conv.messages)) {
+      if (m.direction === 'in' && m.acked === false && m.text != null && !m.locked) {
+        try {
+          await this.api.ackDelivered(conv.convId, m.msgId, this.identity.deviceId);
+          m.acked = true;
+          changed = true;
+          this.event('delivered', { convId: conv.convId, msgId: m.msgId });
+        } catch {
+          /* keep acked:false, retry next sync */
+        }
+      }
     }
 
     // --- reconcile ordering to the server's canonical order -------------
