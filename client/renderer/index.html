@@ -1,0 +1,83 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self'; style-src 'self';" />
+    <title>pqmsg</title>
+    <link rel="stylesheet" href="styles.css" />
+  </head>
+  <body>
+    <!-- login / enrollment -->
+    <section id="login" class="overlay">
+      <div class="panel">
+        <h1>pqmsg<span class="cursor">_</span></h1>
+        <p class="sub">post-quantum end-to-end messaging · ML-KEM-1024 · ML-DSA-87 · AES-256-GCM</p>
+        <label>server<input id="in-server" value="http://localhost:8787" /></label>
+        <label>username<input id="in-user" placeholder="alice" autocomplete="off" /></label>
+        <label>password<input id="in-pass" type="password" placeholder="••••••" /></label>
+        <label>device name<input id="in-device" placeholder="(auto)" /></label>
+        <div class="row">
+          <button id="btn-register" class="ghost">register</button>
+          <button id="btn-login" class="primary">login &amp; enroll</button>
+        </div>
+        <p id="login-msg" class="msg"></p>
+        <p class="hint">a device keypair is generated locally on first login; the private half never leaves this machine.</p>
+      </div>
+    </section>
+
+    <!-- main app -->
+    <div id="app" hidden>
+      <header>
+        <div class="brand">pqmsg <span class="chev">▷</span> <b id="hdr-user"></b><span class="dim" id="hdr-device"></span></div>
+        <div class="status">
+          <span id="dot" class="dot"></span>
+          <span id="sync-status" class="dim">—</span>
+          <button id="btn-sync" class="ghost sm">sync now</button>
+          <button id="btn-settings" class="ghost sm">settings</button>
+        </div>
+      </header>
+
+      <div id="newconv">
+        <span class="prompt">to:</span>
+        <input id="in-to" placeholder="username" autocomplete="off" />
+        <button id="btn-open" class="primary sm">open conversation</button>
+        <span id="newconv-msg" class="msg"></span>
+      </div>
+
+      <main>
+        <aside id="sidebar"></aside>
+        <section id="thread">
+          <div id="thread-head" class="dim">select or open a conversation</div>
+          <div id="messages"></div>
+          <form id="composer" hidden>
+            <input id="in-msg" placeholder="type a message…" autocomplete="off" />
+            <button class="primary" type="submit">send</button>
+          </form>
+        </section>
+      </main>
+
+      <footer id="console"></footer>
+    </div>
+
+    <!-- settings drawer -->
+    <section id="settings" class="overlay" hidden>
+      <div class="panel">
+        <h2>settings</h2>
+        <label>sync interval: <b id="si-val"></b> ms
+          <input id="si" type="range" min="1000" max="15000" step="500" />
+        </label>
+        <div class="kv"><span>server</span><code id="set-server"></code></div>
+        <div class="kv"><span>account</span><code id="set-user"></code></div>
+        <div class="kv"><span>device id</span><code id="set-device"></code></div>
+        <div class="kv"><span>safety #</span><code id="set-safety"></code></div>
+        <div class="kv"><span>profile dir</span><code id="set-dir"></code></div>
+        <div class="row">
+          <button id="btn-logout" class="ghost">log out</button>
+          <button id="btn-close-settings" class="primary">close</button>
+        </div>
+      </div>
+    </section>
+
+    <script src="app.js"></script>
+  </body>
+</html>

@@ -1,0 +1,53 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>pqmsg · server console</title>
+    <link rel="stylesheet" href="dashboard.css" />
+  </head>
+  <body>
+    <header>
+      <div class="brand">pqmsg<span class="chev">▷</span> server console</div>
+      <div class="stat" id="stat"></div>
+      <div class="right">
+        <span id="clock"></span>
+        <label>refresh <select id="interval">
+          <option value="1000">1s</option>
+          <option value="2000" selected>2s</option>
+          <option value="5000">5s</option>
+          <option value="10000">10s</option>
+        </select></label>
+      </div>
+    </header>
+
+    <main>
+      <section class="col">
+        <h2>connections <span id="conn-count" class="pill">0</span></h2>
+        <div id="connections" class="scroll"></div>
+
+        <h2>accounts / IDS <span id="acct-count" class="pill">0</span></h2>
+        <div id="accounts" class="scroll"></div>
+      </section>
+
+      <section class="col grow">
+        <h2>conversations <span id="conv-count" class="pill">0</span></h2>
+        <div class="split">
+          <div id="conversations" class="scroll list"></div>
+          <div id="conv-detail" class="scroll detail"><p class="dim">select a conversation folder</p></div>
+        </div>
+      </section>
+    </main>
+
+    <footer id="events"></footer>
+
+    <div id="raw" class="modal" hidden>
+      <div class="modal-inner">
+        <div class="modal-head"><span id="raw-title"></span><button id="raw-close">close</button></div>
+        <pre id="raw-body"></pre>
+      </div>
+    </div>
+
+    <script src="dashboard.js"></script>
+  </body>
+</html>

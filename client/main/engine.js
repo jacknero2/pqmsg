@@ -1,0 +1,535 @@
+'use strict';
+/*
+ * pqmsg client engine (Electron main process).
+ *
+ * Owns: device identity + secret keys, the server API client, the background
+ * sync loop, and the local *decrypted* conversation store. The renderer never
+ * sees key material — it talks to this over IPC.
+ *
+ * Robustness / eventual consistency:
+ *   - Sends are optimistic; failures land in a disk outbox and retry every cycle.
+ *   - Every sync cycle re-pulls a trailing window of each conversation and snaps
+ *     local message order to the server's canonical `order` array. Local-only
+ *     (not-yet-acked) messages are pinned to the tail until the server has them.
+ *   - Outgoing message colour: pending/sent => light red, delivered => gold.
+ */
+
+const os = require('os');
+const { EventEmitter } = require('events');
+const WebSocket = require('ws');
+const { Api } = require('./api');
+const { ClientStore } = require('./store');
+const pqc = require('../../shared/crypto');
+
+const norm = (u) => String(u || '').trim().toLowerCase();
+const TRAILING_WINDOW = 30; // messages re-checked each cycle for order + delivery
+
+class Engine extends EventEmitter {
+  constructor(profile) {
+    super();
+    this.store = new ClientStore(profile);
+    this.identity = this.store.loadIdentity();
+    this.api = null;
+    this.ws = null;
+    this.connected = false;
+    this.needsLogin = !this.identity;
+    this.syncing = false;
+    this.syncIntervalMs = parseInt(process.env.PQMSG_SYNC_MS || '3000', 10);
+    this._timer = null;
+    this._wsRetry = 0;
+    this._forced = new Set();
+    this.lastSyncAt = 0;
+    this.lastSyncError = null;
+    this.log = [];
+  }
+
+  event(kind, detail) {
+    const e = { at: Date.now(), kind, ...detail };
+    this.log.push(e);
+    if (this.log.length > 200) this.log.shift();
+    this.emit('engine-event', e);
+    this.emit('update');
+  }
+
+  get me() {
+    return this.identity ? norm(this.identity.username) : null;
+  }
+
+  snapshot() {
+    return {
+      profile: this.store.profile,
+      dir: this.store.dir,
+      enrolled: !!this.identity,
+      needsLogin: this.needsLogin,
+      username: this.identity?.username || null,
+      deviceName: this.identity?.deviceName || null,
+      deviceId: this.identity?.deviceId || null,
+      serverUrl: this.identity?.serverUrl || process.env.PQMSG_SERVER || 'http://localhost:8787',
+      safetyNumber: this.identity ? pqc.safetyNumber([this.identity.sigPublicKey]) : null,
+      connected: this.connected,
+      syncing: this.syncing,
+      syncIntervalMs: this.syncIntervalMs,
+      lastSyncAt: this.lastSyncAt,
+      lastSyncError: this.lastSyncError,
+      conversations: this.listConversationsView(),
+      log: this.log.slice(-60),
+    };
+  }
+
+  // -- account lifecycle -------------------------------------------------
+  async register({ serverUrl, username, password }) {
+    const api = new Api(serverUrl);
+    await api.register(norm(username), password);
+    this.event('register', { username: norm(username) });
+    return { ok: true };
+  }
+
+  async login({ serverUrl, username, password, deviceName }) {
+    username = norm(username);
+    const api = new Api(serverUrl);
+    const { token } = await api.login(username, password);
+    api.setToken(token);
+
+    // reuse existing identity keys for this profile if present & same user
+    let id = this.identity;
+    if (id && norm(id.username) !== username) {
+      throw new Error(`profile "${this.store.profile}" is already bound to @${id.username}; use a different PQMSG_PROFILE`);
+    }
+    if (!id) {
+      const keys = pqc.generateIdentity();
+      id = {
+        username,
+        deviceName: deviceName || `${os.hostname()} (${this.store.profile})`,
+        ...keys,
+        deviceId: pqc.deviceIdFromSigPub(keys.sigPublicKey),
+      };
+    }
+    id.serverUrl = serverUrl;
+    id.token = token;
+
+    // enroll / re-assert this device in the IDS
+    const attestation = pqc.signEnrollment(id, { username, deviceName: id.deviceName });
+    const { deviceId } = await api.enrollDevice({
+      deviceName: id.deviceName,
+      kemPublicKey: id.kemPublicKey,
+      sigPublicKey: id.sigPublicKey,
+      attestation,
+    });
+    id.deviceId = deviceId;
+
+    this.identity = id;
+    this.store.saveIdentity(id);
+    this.api = api;
+    this.needsLogin = false;
+    this.event('enroll', { username, deviceId, deviceName: id.deviceName });
+    this.startLoops();
+    this.connectWs();
+    this.syncOnce('post-login').catch(() => {});
+    return { ok: true, deviceId };
+  }
+
+  async resume() {
+    if (!this.identity) return;
+    this.api = new Api(this.identity.serverUrl, this.identity.token);
+    try {
+      await this.api.myDevices(); // validates token
+      this.needsLogin = false;
+      this.startLoops();
+      this.connectWs();
+      this.syncOnce('resume').catch(() => {});
+    } catch (e) {
+      this.needsLogin = true;
+      this.event('token-expired', { error: e.message });
+    }
+  }
+
+  logout() {
+    this.stopLoops();
+    if (this.ws) try { this.ws.close(); } catch {}
+    this.ws = null;
+    this.connected = false;
+    if (this.identity) {
+      delete this.identity.token;
+      this.store.saveIdentity(this.identity);
+    }
+    this.needsLogin = true;
+    this.emit('update');
+  }
+
+  // -- loops / websocket ----------------------------------------------
+  startLoops() {
+    this.stopLoops();
+    this._timer = setInterval(() => this.syncOnce('interval').catch(() => {}), this.syncIntervalMs);
+  }
+  stopLoops() {
+    if (this._timer) clearInterval(this._timer);
+    this._timer = null;
+  }
+  setSyncInterval(ms) {
+    this.syncIntervalMs = Math.max(1000, ms | 0);
+    if (this._timer) this.startLoops();
+    this.emit('update');
+  }
+
+  connectWs() {
+    if (!this.identity) return;
+    if (this.ws) try { this.ws.close(); } catch {}
+    const wsBase = this.identity.serverUrl.replace(/^http/, 'ws');
+    const url =
+      `${wsBase}/ws?token=${encodeURIComponent(this.identity.token)}` +
+      `&deviceId=${encodeURIComponent(this.identity.deviceId)}` +
+      `&deviceName=${encodeURIComponent(this.identity.deviceName)}`;
+    const ws = new WebSocket(url);
+    this.ws = ws;
+    ws.on('open', () => {
+      this.connected = true;
+      this._wsRetry = 0;
+      this.event('ws-open', {});
+    });
+    ws.on('message', (raw) => {
+      let m;
+      try {
+        m = JSON.parse(raw);
+      } catch {
+        return;
+      }
+      if (m.type === 'wake' && m.convId) {
+        this._forced.add(m.convId);
+        this.syncOnce('wake').catch(() => {});
+      }
+    });
+    ws.on('close', () => {
+      this.connected = false;
+      this.emit('update');
+      if (this.identity && !this.needsLogin) {
+        this._wsRetry = Math.min(this._wsRetry + 1, 6);
+        setTimeout(() => this.connectWs(), 500 * 2 ** this._wsRetry);
+      }
+    });
+    ws.on('error', () => {}); // 'close' handles retry
+  }
+
+  // -- contacts / IDS ------------------------------------------------
+  async refreshContact(username, force = false) {
+    username = norm(username);
+    const cached = this.store.getContact(username);
+    if (!force && cached && Date.now() - cached.fetchedAt < 60000) return cached;
+    const ids = await this.api.ids(username);
+    if (cached && cached.safetyNumber && ids.safetyNumber !== cached.safetyNumber) {
+      this.event('safety-number-changed', { username, from: cached.safetyNumber, to: ids.safetyNumber });
+    }
+    this.store.saveContact(username, ids);
+    return this.store.getContact(username);
+  }
+
+  async startConversation(username) {
+    username = norm(username);
+    if (username === this.me) throw new Error('cannot message yourself');
+    const ids = await this.refreshContact(username, true);
+    if (!ids.devices.length) throw new Error(`@${username} has no enrolled devices yet`);
+    const convId = pqc.dmConvId(this.me, username);
+    this.store.ensureConversation(convId, [this.me, username], 'dm');
+    this.event('conversation-open', { username, convId, devices: ids.devices.length, safetyNumber: ids.safetyNumber });
+    this.emit('update');
+    return convId;
+  }
+
+  async gatherRecipients(participants) {
+    const out = [];
+    for (const u of participants) {
+      const ids = await this.refreshContact(u);
+      for (const d of ids.devices) {
+        if (d.deviceId === this.identity.deviceId) continue; // our own sending device already has plaintext
+        out.push({ deviceId: d.deviceId, kemPublicKey: d.kemPublicKey, owner: norm(u) });
+      }
+    }
+    return out;
+  }
+
+  // -- send ----------------------------------------------------------
+  async sendMessage(convId, text) {
+    const conv = this.store.loadConversation(convId);
+    if (!conv) throw new Error('unknown conversation');
+    text = String(text);
+    if (!text.trim()) return;
+
+    const seq = (conv.lamport || 0) + 1;
+    conv.lamport = seq;
+    const prevId = conv.order.length ? conv.order[conv.order.length - 1] : null;
+    const recipients = await this.gatherRecipients(conv.participants);
+
+    const envelope = pqc.encryptEnvelope({
+      body: { v: 1, kind: 'text', text },
+      sender: this.me,
+      senderDevice: this.identity.deviceId,
+      convId,
+      seq,
+      prevId,
+      recipients,
+      sigSecretKey: this.identity.sigSecretKey,
+    });
+
+    conv.messages[envelope.msgId] = {
+      msgId: envelope.msgId,
+      sender: this.me,
+      senderDevice: this.identity.deviceId,
+      sentAt: envelope.sentAt,
+      seq,
+      prevId,
+      text,
+      direction: 'out',
+      state: 'pending',
+      outRecipients: recipients.filter((r) => r.owner !== this.me).map((r) => r.deviceId),
+      deliveries: {},
+      serverSeq: null,
+    };
+    if (!conv.order.includes(envelope.msgId)) conv.order.push(envelope.msgId);
+    this.store.saveConversation(conv);
+    this.event('encrypted', { convId, msgId: envelope.msgId, forDevices: recipients.length });
+    this.emit('update');
+
+    const outbox = this.store.loadOutbox();
+    outbox.push({ convId, envelope, participants: conv.participants, kind: conv.kind, msgId: envelope.msgId });
+    this.store.saveOutbox(outbox);
+    await this.flushOutbox();
+  }
+
+  async flushOutbox() {
+    let outbox = this.store.loadOutbox();
+    if (!outbox.length) return;
+    const keep = [];
+    for (const item of outbox) {
+      try {
+        const { stored } = await this.api.sendMessage(item.convId, {
+          envelope: item.envelope,
+          participants: item.participants,
+          kind: item.kind,
+        });
+        const conv = this.store.loadConversation(item.convId);
+        const rec = conv?.messages[item.msgId];
+        if (rec) {
+          rec.serverSeq = stored.serverSeq;
+          rec.deliveries = stored.deliveries || {};
+          rec.state = this._deliveredEnough(rec) ? 'delivered' : 'sent';
+          this.store.saveConversation(conv);
+        }
+        this.event('sent', { convId: item.convId, msgId: item.msgId, serverSeq: stored.serverSeq });
+      } catch (e) {
+        if (e.status && e.status >= 400 && e.status < 500) {
+          const conv = this.store.loadConversation(item.convId);
+          if (conv?.messages[item.msgId]) {
+            conv.messages[item.msgId].state = 'failed';
+            conv.messages[item.msgId].error = e.message;
+            this.store.saveConversation(conv);
+          }
+          this.event('send-failed', { convId: item.convId, msgId: item.msgId, error: e.message });
+        } else {
+          keep.push(item); // transient — retry next cycle
+        }
+      }
+    }
+    this.store.saveOutbox(keep);
+    this.emit('update');
+  }
+
+  _deliveredEnough(rec) {
+    const d = rec.deliveries || {};
+    if (rec.outRecipients && rec.outRecipients.length) return rec.outRecipients.some((id) => d[id]);
+    return Object.keys(d).length > 0;
+  }
+
+  // -- sync --------------------------------------------------------
+  /**
+   * Coalescing scheduler: at most one sync running + one queued. Extra calls
+   * (interval tick, WS wake, manual button) fold into the queued run so a wake
+   * during a sync is never dropped and never stacks up.
+   */
+  syncOnce(reason = 'manual') {
+    if (this._queued) return this._queued;
+    const start = this._running || Promise.resolve();
+    this._queued = start
+      .catch(() => {})
+      .then(() => {
+        this._queued = null;
+        this._running = this._doSync(reason).finally(() => {
+          this._running = null;
+        });
+        return this._running;
+      });
+    return this._queued;
+  }
+
+  async _doSync(reason) {
+    if (!this.api || !this.identity || this.needsLogin) return;
+    this.syncing = true;
+    this.emit('update');
+    try {
+      await this.flushOutbox();
+      const { conversations } = await this.api.inbox();
+      for (const c of conversations) {
+        const conv = this.store.ensureConversation(c.convId, c.participants.map(norm), c.kind);
+        await this.pullConversation(conv);
+      }
+      this._forced.clear();
+      this.lastSyncAt = Date.now();
+      this.lastSyncError = null;
+    } catch (e) {
+      this.lastSyncError = e.message;
+      this.event('sync-error', { reason, error: e.message });
+    } finally {
+      this.syncing = false;
+      this.emit('update');
+    }
+  }
+
+  async pullConversation(conv) {
+    const from = Math.max(0, conv.cursorSeq - TRAILING_WINDOW);
+    const { messages, order } = await this.api.fetchMessages(conv.convId, from);
+    let maxSeq = conv.cursorSeq;
+    let changed = false;
+
+    for (const env of messages) {
+      maxSeq = Math.max(maxSeq, env.serverSeq);
+      const mine = norm(env.sender) === this.me && env.senderDevice === this.identity.deviceId;
+      const existing = conv.messages[env.msgId];
+
+      if (mine) {
+        if (existing) {
+          existing.serverSeq = env.serverSeq;
+          existing.deliveries = env.deliveries || {};
+          const ns = this._deliveredEnough(existing) ? 'delivered' : 'sent';
+          if (ns !== existing.state && existing.state !== 'failed') {
+            existing.state = ns;
+            changed = true;
+          }
+        } else {
+          conv.messages[env.msgId] = {
+            msgId: env.msgId, sender: env.sender, senderDevice: env.senderDevice, sentAt: env.sentAt,
+            seq: env.seq, prevId: env.prevId, direction: 'out', state: 'sent', otherDevice: true,
+            text: '· sent from another of your devices ·', serverSeq: env.serverSeq, deliveries: env.deliveries || {},
+          };
+          changed = true;
+        }
+        continue;
+      }
+
+      const forMe = env.recipients.some((r) => r.deviceId === this.identity.deviceId);
+      if (!forMe) {
+        if (!existing) {
+          conv.messages[env.msgId] = {
+            msgId: env.msgId, sender: env.sender, sentAt: env.sentAt, seq: env.seq, prevId: env.prevId,
+            direction: 'in', state: 'locked', locked: true, text: '🔒 message for another device', serverSeq: env.serverSeq,
+          };
+          changed = true;
+        }
+        continue;
+      }
+      if (existing && existing.text != null && !existing.locked) {
+        existing.serverSeq = env.serverSeq;
+        continue; // already decrypted
+      }
+
+      let verified = false;
+      try {
+        const sids = await this.refreshContact(norm(env.sender));
+        const sdev = sids.devices.find((d) => d.deviceId === env.senderDevice);
+        verified = sdev ? pqc.verifyEnvelope(env, sdev.sigPublicKey) : false;
+      } catch {}
+      let text, ok = true;
+      try {
+        text = pqc.decryptEnvelope(env, this.identity.deviceId, this.identity.kemSecretKey).body.text;
+      } catch (e) {
+        text = `[undecryptable: ${e.message}]`;
+        ok = false;
+      }
+      conv.messages[env.msgId] = {
+        msgId: env.msgId, sender: env.sender, senderDevice: env.senderDevice, sentAt: env.sentAt,
+        seq: env.seq, prevId: env.prevId, direction: 'in',
+        state: verified && ok ? 'received' : 'suspect', verified, text, serverSeq: env.serverSeq,
+      };
+      changed = true;
+      this.event('decrypted', { convId: conv.convId, msgId: env.msgId, from: env.sender, verified });
+      this.api.ackDelivered(conv.convId, env.msgId, this.identity.deviceId).catch(() => {});
+    }
+
+    // --- reconcile ordering to the server's canonical order -------------
+    const tail = conv.order.filter((id) => !order.includes(id) && conv.messages[id]);
+    const nextOrder = [...order.filter((id) => conv.messages[id]), ...tail];
+    if (nextOrder.join('|') !== conv.order.join('|')) {
+      conv.order = nextOrder;
+      changed = true;
+      this.event('reordered', { convId: conv.convId, length: nextOrder.length });
+    }
+    conv.cursorSeq = maxSeq;
+    conv.lastReconciledAt = Date.now();
+    this.store.saveConversation(conv);
+    if (changed) this.emit('update');
+  }
+
+  // -- views for the renderer --------------------------------------
+  _displayState(m) {
+    if (m.direction === 'out') {
+      if (m.state === 'failed') return 'failed';
+      if (m.state === 'delivered') return 'delivered';
+      return 'undelivered'; // pending | sent | otherDevice
+    }
+    if (m.locked) return 'locked';
+    if (m.state === 'suspect') return 'suspect';
+    return 'received';
+  }
+  getConversationView(convId) {
+    const conv = this.store.loadConversation(convId);
+    if (!conv) return null;
+    const seen = new Set();
+    const messages = conv.order
+      .filter((id) => (seen.has(id) ? false : seen.add(id)))
+      .map((id) => conv.messages[id])
+      .filter(Boolean)
+      .map((m) => ({
+        msgId: m.msgId,
+        mine: m.direction === 'out',
+        sender: m.sender,
+        text: m.text,
+        sentAt: m.sentAt,
+        serverSeq: m.serverSeq,
+        seq: m.seq,
+        state: m.state,
+        display: this._displayState(m),
+        verified: m.verified,
+        deliveries: m.deliveries ? Object.keys(m.deliveries).length : 0,
+        error: m.error,
+      }));
+    return {
+      convId,
+      participants: conv.participants,
+      kind: conv.kind,
+      lastReconciledAt: conv.lastReconciledAt,
+      cursorSeq: conv.cursorSeq,
+      messages,
+    };
+  }
+  listConversationsView() {
+    return this.store
+      .listConversationIds()
+      .map((id) => this.getConversationView(id))
+      .filter(Boolean)
+      .map((c) => {
+        const last = c.messages[c.messages.length - 1];
+        const other = c.participants.filter((p) => p !== this.me);
+        return {
+          convId: c.convId,
+          title: other.join(', ') || c.participants.join(', '),
+          participants: c.participants,
+          kind: c.kind,
+          messageCount: c.messages.length,
+          lastText: last ? last.text : '',
+          lastAt: last ? last.sentAt : c.lastReconciledAt,
+          lastMine: last ? last.mine : false,
+          lastDisplay: last ? last.display : null,
+        };
+      })
+      .sort((a, b) => (b.lastAt || 0) - (a.lastAt || 0));
+  }
+}
+
+module.exports = { Engine };
