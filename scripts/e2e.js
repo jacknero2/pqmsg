@@ -39,6 +39,18 @@ const bad = (name, e) => {
 };
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
+/** Poll `fn` until it returns truthy or the deadline passes (for fire-and-forget
+ *  paths like delivery acks, which the sync loop reconciles asynchronously). */
+async function until(fn, { timeout = 4000, step = 100 } = {}) {
+  const end = Date.now() + timeout;
+  for (;;) {
+    const v = await fn();
+    if (v) return v;
+    if (Date.now() > end) return v;
+    await sleep(step);
+  }
+}
+
 async function waitHealth() {
   for (let i = 0; i < 100; i++) {
     try {
@@ -122,9 +134,10 @@ async function waitHealth() {
 
   try {
     await alice.sendMessage(convId, 'hello bob — post-quantum secured');
-    await bob.syncOnce('test');
-    const v = bob.getConversationView(convId);
-    const m = v.messages.find((x) => x.text === 'hello bob — post-quantum secured');
+    const m = await until(async () => {
+      await bob.syncOnce('test');
+      return bob.getConversationView(convId).messages.find((x) => x.text === 'hello bob — post-quantum secured') || null;
+    });
     assert.ok(m, 'bob decrypted the message');
     assert.strictEqual(m.verified, true, 'bob verified the signature');
     assert.strictEqual(m.display, 'received');
@@ -134,11 +147,15 @@ async function waitHealth() {
   }
 
   try {
-    await sleep(50);
-    await alice.syncOnce('test'); // picks up bob's delivery ack
-    const v = alice.getConversationView(convId);
-    const m = v.messages.find((x) => x.text === 'hello bob — post-quantum secured');
-    assert.strictEqual(m.display, 'delivered', 'alice sees gold/delivered after bob’s ack');
+    // bob's delivery ack is fire-and-forget; poll until alice's sync reconciles it
+    const m = await until(async () => {
+      await bob.syncOnce('test');
+      await alice.syncOnce('test');
+      const v = alice.getConversationView(convId);
+      const msg = v.messages.find((x) => x.text === 'hello bob — post-quantum secured');
+      return msg && msg.display === 'delivered' ? msg : null;
+    });
+    assert.ok(m, 'alice sees gold/delivered after bob’s ack');
     ok('delivery ack: alice’s message flipped undelivered(red) -> delivered(gold)');
   } catch (e) {
     bad('delivery ack', e);
@@ -146,9 +163,11 @@ async function waitHealth() {
 
   try {
     await bob.sendMessage(convId, 'got it — is it gold now?');
-    await alice.syncOnce('test');
-    const v = alice.getConversationView(convId);
-    assert.ok(v.messages.some((x) => x.text === 'got it — is it gold now?' && x.verified));
+    const got = await until(async () => {
+      await alice.syncOnce('test');
+      return alice.getConversationView(convId).messages.some((x) => x.text === 'got it — is it gold now?' && x.verified);
+    });
+    assert.ok(got, 'alice decrypts + verifies the reply');
     ok('reply path b->a decrypts + verifies');
   } catch (e) {
     bad('b->a message', e);
