@@ -62,6 +62,56 @@ class Engine extends EventEmitter {
   get me() {
     return this.identity ? norm(this.identity.username) : null;
   }
+  /** this account's global handle: username@<canonical origin of its home server> */
+  get myHandle() {
+    return this.identity ? pqc.formatHandle({ username: this.me, server: pqc.normServer(this.identity.serverUrl) }) : null;
+  }
+  isMe(handle) {
+    try {
+      return pqc.normHandle(handle) === this.myHandle;
+    } catch {
+      return norm(handle) === this.me; // legacy bare-username records
+    }
+  }
+
+  // -- federated HTTP: talk to a conversation's home server, proving identity
+  //    with a short ML-DSA-signed X-PQMSG-Auth header when needed -----------
+  _authHeader({ method, path, convId }) {
+    const ts = Date.now();
+    const sig = pqc.signRequest(this.identity.sigSecretKey, {
+      m: 'pqmsg-auth',
+      method,
+      path,
+      convId: convId || null,
+      deviceId: this.identity.deviceId,
+      ts,
+    });
+    return Buffer.from(JSON.stringify({ handle: this.myHandle, deviceId: this.identity.deviceId, ts, sig })).toString('base64');
+  }
+  async _fed(method, serverUrl, path, { query, body, auth, convId } = {}) {
+    const qs = query ? '?' + new URLSearchParams(query).toString() : '';
+    const headers = { 'content-type': 'application/json' };
+    if (auth) headers['x-pqmsg-auth'] = this._authHeader({ method, path, convId });
+    const res = await fetch(pqc.normServer(serverUrl) + path + qs, {
+      method,
+      headers,
+      body: body ? JSON.stringify(body) : undefined,
+    });
+    const text = await res.text();
+    let data;
+    try {
+      data = text ? JSON.parse(text) : {};
+    } catch {
+      data = { raw: text };
+    }
+    if (!res.ok) {
+      const err = new Error(data.error || `HTTP ${res.status}`);
+      err.status = res.status;
+      err.body = data;
+      throw err;
+    }
+    return data;
+  }
 
   snapshot() {
     return {
@@ -283,38 +333,113 @@ class Engine extends EventEmitter {
     ws.on('error', () => {}); // 'close' handles retry
   }
 
-  // -- contacts / IDS ------------------------------------------------
-  async refreshContact(username, force = false) {
-    username = norm(username);
-    const cached = this.store.getContact(username);
+  // -- contacts / IDS (federated: resolve against the handle's own server) --
+  /** @param {string} handleInput  "bob" (=> bob@myserver) or "bob@server" */
+  _asHandle(handleInput) {
+    const s = String(handleInput || '').trim();
+    return pqc.normHandle(s.includes('@') ? s : `${s}@${this.identity.serverUrl}`);
+  }
+  async refreshContact(handleInput, force = false) {
+    const handle = this._asHandle(handleInput);
+    const { username, server } = pqc.parseHandle(handle);
+    const cached = this.store.getContact(handle);
     if (!force && cached && Date.now() - cached.fetchedAt < 60000) return cached;
-    const ids = await this.api.ids(username);
-    if (cached && cached.safetyNumber && ids.safetyNumber !== cached.safetyNumber) {
-      this.event('safety-number-changed', { username, from: cached.safetyNumber, to: ids.safetyNumber });
+    let ids;
+    if (server === pqc.parseHandle(this.myHandle).server && this.api) {
+      ids = await this.api.ids(username); // our own server — use the authed client
+    } else {
+      ids = await this._fed('GET', server, `/api/ids/${encodeURIComponent(username)}`);
     }
-    this.store.saveContact(username, ids);
-    return this.store.getContact(username);
+    ids.handle = handle;
+    if (cached && cached.safetyNumber && ids.safetyNumber !== cached.safetyNumber) {
+      this.event('safety-number-changed', { handle, from: cached.safetyNumber, to: ids.safetyNumber });
+    }
+    this.store.saveContact(handle, ids);
+    return this.store.getContact(handle);
   }
 
-  async startConversation(username) {
-    username = norm(username);
-    if (username === this.me) throw new Error('cannot message yourself');
-    const ids = await this.refreshContact(username, true);
-    if (!ids.devices.length) throw new Error(`@${username} has no enrolled devices yet`);
-    const convId = pqc.dmConvId(this.me, username);
-    this.store.ensureConversation(convId, [this.me, username], 'dm');
-    this.event('conversation-open', { username, convId, devices: ids.devices.length, safetyNumber: ids.safetyNumber });
+  async startConversation(handleInput) {
+    const other = this._asHandle(handleInput);
+    if (this.isMe(other)) throw new Error('cannot message yourself');
+    const ids = await this.refreshContact(other, true);
+    if (!ids.devices.length) throw new Error(`${other} has no enrolled devices yet`);
+    const parts = [this.myHandle, other];
+    const convId = pqc.dmConvId(parts[0], parts[1]);
+    const home = pqc.homeServer(parts);
+    this.store.ensureConversation(convId, parts, 'dm', home, null, 'active');
+    this.event('conversation-open', { handle: other, convId, home, devices: ids.devices.length, safetyNumber: ids.safetyNumber });
     this.emit('update');
     return convId;
   }
 
+  async startGroup({ name, members }) {
+    const parts = [this.myHandle, ...(members || []).map((m) => this._asHandle(m))].filter((v, i, a) => a.indexOf(v) === i);
+    if (parts.length < 3) throw new Error('a group needs at least 2 other people');
+    for (const p of parts) if (!this.isMe(p)) await this.refreshContact(p, true); // pre-resolve keys
+    const convId = 'grp_' + require('crypto').randomBytes(16).toString('hex');
+    const home = pqc.homeServer(parts);
+    this.store.ensureConversation(convId, parts, 'group', home, name || 'group', 'active');
+    this.event('group-created', { convId, home, members: parts.length, name });
+    this.emit('update');
+    return convId;
+  }
+
+  async _setMembers(convId, parts, name) {
+    const conv = this.store.loadConversation(convId);
+    if (!conv || conv.kind !== 'group') throw new Error('not a group');
+    await this._fed('POST', conv.homeServer, `/api/conv/${convId}/members`, {
+      body: { participants: parts, name: name ?? conv.name },
+      auth: true,
+      convId,
+    });
+    conv.participants = parts;
+    if (name !== undefined) conv.name = name;
+    this.store.saveConversation(conv);
+    this.emit('update');
+  }
+  async addGroupMember(convId, handleInput) {
+    const conv = this.store.loadConversation(convId);
+    const h = this._asHandle(handleInput);
+    if (!conv.participants.includes(h)) {
+      await this.refreshContact(h, true);
+      await this._setMembers(convId, [...conv.participants, h]);
+      this.event('group-add', { convId, handle: h });
+    }
+  }
+  async removeGroupMember(convId, handleInput) {
+    const conv = this.store.loadConversation(convId);
+    const h = this._asHandle(handleInput);
+    await this._setMembers(convId, conv.participants.filter((p) => p !== h));
+    this.event('group-remove', { convId, handle: h });
+  }
+
+  // -- conversation acceptance (incoming requests) -------------------
+  acceptConversation(convId) {
+    const conv = this.store.loadConversation(convId);
+    if (!conv) throw new Error('unknown conversation');
+    conv.status = 'active';
+    this.store.saveConversation(conv);
+    this.event('conversation-accepted', { convId });
+    this.syncOnce('accept').catch(() => {});
+    this.emit('update');
+  }
+  declineConversation(convId) {
+    const conv = this.store.loadConversation(convId);
+    if (!conv) return;
+    conv.status = 'declined';
+    this.store.saveConversation(conv);
+    this.event('conversation-declined', { convId });
+    this.emit('update');
+  }
+
   async gatherRecipients(participants) {
     const out = [];
-    for (const u of participants) {
-      const ids = await this.refreshContact(u);
+    for (const h of participants) {
+      const ids = await this.refreshContact(h);
+      const owner = pqc.normHandle(h);
       for (const d of ids.devices) {
         if (d.deviceId === this.identity.deviceId) continue; // our own sending device already has plaintext
-        out.push({ deviceId: d.deviceId, kemPublicKey: d.kemPublicKey, owner: norm(u) });
+        out.push({ deviceId: d.deviceId, kemPublicKey: d.kemPublicKey, owner });
       }
     }
     return out;
@@ -334,7 +459,7 @@ class Engine extends EventEmitter {
 
     const envelope = pqc.encryptEnvelope({
       body: { v: 1, kind: 'text', text },
-      sender: this.me,
+      sender: this.myHandle,
       senderDevice: this.identity.deviceId,
       convId,
       seq,
@@ -345,7 +470,7 @@ class Engine extends EventEmitter {
 
     conv.messages[envelope.msgId] = {
       msgId: envelope.msgId,
-      sender: this.me,
+      sender: this.myHandle,
       senderDevice: this.identity.deviceId,
       sentAt: envelope.sentAt,
       seq,
@@ -353,7 +478,7 @@ class Engine extends EventEmitter {
       text,
       direction: 'out',
       state: 'pending',
-      outRecipients: recipients.filter((r) => r.owner !== this.me).map((r) => r.deviceId),
+      outRecipients: recipients.filter((r) => r.owner !== this.myHandle).map((r) => r.deviceId),
       deliveries: {},
       serverSeq: null,
     };
@@ -363,7 +488,15 @@ class Engine extends EventEmitter {
     this.emit('update');
 
     const outbox = this.store.loadOutbox();
-    outbox.push({ convId, envelope, participants: conv.participants, kind: conv.kind, msgId: envelope.msgId });
+    outbox.push({
+      convId,
+      envelope,
+      participants: conv.participants,
+      kind: conv.kind,
+      name: conv.name || null,
+      homeServer: conv.homeServer,
+      msgId: envelope.msgId,
+    });
     this.store.saveOutbox(outbox);
     await this.flushOutbox();
   }
@@ -374,13 +507,26 @@ class Engine extends EventEmitter {
     const keep = [];
     for (const item of outbox) {
       try {
-        const { stored } = await this.api.sendMessage(item.convId, {
-          envelope: item.envelope,
-          participants: item.participants,
-          kind: item.kind,
-        });
+        let home = item.homeServer || pqc.homeServer(item.participants);
+        let stored;
+        try {
+          ({ stored } = await this._fed('POST', home, `/api/conv/${item.convId}/messages`, {
+            body: { envelope: item.envelope, participants: item.participants, kind: item.kind, name: item.name },
+          }));
+        } catch (e) {
+          if (e.status === 421 && e.body && e.body.homeServer) {
+            home = pqc.normServer(e.body.homeServer); // server told us the real home — retry there
+            const conv = this.store.loadConversation(item.convId);
+            if (conv) (conv.homeServer = home), this.store.saveConversation(conv);
+            ({ stored } = await this._fed('POST', home, `/api/conv/${item.convId}/messages`, {
+              body: { envelope: item.envelope, participants: item.participants, kind: item.kind, name: item.name },
+            }));
+          } else {
+            throw e;
+          }
+        }
         const conv = this.store.loadConversation(item.convId);
-        const rec = conv?.messages[item.msgId];
+        const rec = conv && conv.messages[item.msgId];
         if (rec) {
           rec.serverSeq = stored.serverSeq;
           rec.deliveries = stored.deliveries || {};
@@ -391,7 +537,7 @@ class Engine extends EventEmitter {
       } catch (e) {
         if (e.status && e.status >= 400 && e.status < 500) {
           const conv = this.store.loadConversation(item.convId);
-          if (conv?.messages[item.msgId]) {
+          if (conv && conv.messages[item.msgId]) {
             conv.messages[item.msgId].state = 'failed';
             conv.messages[item.msgId].error = e.message;
             this.store.saveConversation(conv);
@@ -439,9 +585,24 @@ class Engine extends EventEmitter {
     this.emit('update');
     try {
       await this.flushOutbox();
-      const { conversations } = await this.api.inbox();
+      // inbox on our OWN server: local conversations + pointers to conversations
+      // hosted on other servers where we are a participant
+      const { conversations } = await this._fed('GET', this.identity.serverUrl, '/api/inbox', { auth: true });
       for (const c of conversations) {
-        const conv = this.store.ensureConversation(c.convId, c.participants.map(norm), c.kind);
+        const existed = !!this.store.loadConversation(c.convId);
+        const conv = this.store.ensureConversation(
+          c.convId,
+          (c.participants || []).map((p) => this._asHandle(p)),
+          c.kind,
+          c.homeServer ? pqc.normServer(c.homeServer) : null,
+          c.name,
+          existed ? undefined : 'pending' // someone else started it -> needs accept/decline
+        );
+        if (conv.status === 'declined') continue;
+        if (conv.status === 'pending') {
+          this.emit('update');
+          continue;
+        }
         await this.pullConversation(conv);
       }
       this._forced.clear();
@@ -456,15 +617,28 @@ class Engine extends EventEmitter {
     }
   }
 
+  async _fedConvGet(conv, path, query) {
+    try {
+      return await this._fed('GET', conv.homeServer, path, { query, auth: true, convId: conv.convId });
+    } catch (e) {
+      if (e.status === 421 && e.body && e.body.homeServer) {
+        conv.homeServer = pqc.normServer(e.body.homeServer);
+        this.store.saveConversation(conv);
+        return this._fed('GET', conv.homeServer, path, { query, auth: true, convId: conv.convId });
+      }
+      throw e;
+    }
+  }
+
   async pullConversation(conv) {
     const from = Math.max(0, conv.cursorSeq - TRAILING_WINDOW);
-    const { messages, order } = await this.api.fetchMessages(conv.convId, from);
+    const { messages, order } = await this._fedConvGet(conv, `/api/conv/${conv.convId}/messages`, { sinceSeq: from });
     let maxSeq = conv.cursorSeq;
     let changed = false;
 
     for (const env of messages) {
       maxSeq = Math.max(maxSeq, env.serverSeq);
-      const mine = norm(env.sender) === this.me && env.senderDevice === this.identity.deviceId;
+      const mine = this.isMe(env.sender) && env.senderDevice === this.identity.deviceId;
       const existing = conv.messages[env.msgId];
 
       if (mine) {
@@ -505,7 +679,7 @@ class Engine extends EventEmitter {
 
       let verified = false;
       try {
-        const sids = await this.refreshContact(norm(env.sender));
+        const sids = await this.refreshContact(env.sender);
         const sdev = sids.devices.find((d) => d.deviceId === env.senderDevice);
         verified = sdev ? pqc.verifyEnvelope(env, sdev.sigPublicKey) : false;
       } catch {}
@@ -530,7 +704,11 @@ class Engine extends EventEmitter {
     for (const m of Object.values(conv.messages)) {
       if (m.direction === 'in' && m.acked === false && m.text != null && !m.locked) {
         try {
-          await this.api.ackDelivered(conv.convId, m.msgId, this.identity.deviceId);
+          await this._fed('POST', conv.homeServer, `/api/conv/${conv.convId}/messages/${m.msgId}/delivered`, {
+            body: { deviceId: this.identity.deviceId },
+            auth: true,
+            convId: conv.convId,
+          });
           m.acked = true;
           changed = true;
           this.event('delivered', { convId: conv.convId, msgId: m.msgId });
@@ -565,6 +743,17 @@ class Engine extends EventEmitter {
     if (m.state === 'suspect') return 'suspect';
     return 'received';
   }
+  /** "@alice" if same server as me, else "alice@host" (scheme stripped) */
+  prettyHandle(h) {
+    try {
+      const { username, server } = pqc.parseHandle(this._asHandle(h));
+      return server === pqc.parseHandle(this.myHandle).server
+        ? '@' + username
+        : username + '@' + server.replace(/^https?:\/\//, '');
+    } catch {
+      return String(h);
+    }
+  }
   getConversationView(convId) {
     const conv = this.store.loadConversation(convId);
     if (!conv) return null;
@@ -576,7 +765,7 @@ class Engine extends EventEmitter {
       .map((m) => ({
         msgId: m.msgId,
         mine: m.direction === 'out',
-        sender: m.sender,
+        sender: this.prettyHandle(m.sender),
         text: m.text,
         sentAt: m.sentAt,
         serverSeq: m.serverSeq,
@@ -589,8 +778,13 @@ class Engine extends EventEmitter {
       }));
     return {
       convId,
-      participants: conv.participants,
+      participants: conv.participants.map((p) => this.prettyHandle(p)),
+      participantHandles: conv.participants,
       kind: conv.kind,
+      name: conv.name || null,
+      status: conv.status || 'active',
+      homeServer: conv.homeServer || null,
+      homeIsMine: conv.homeServer ? pqc.normServer(conv.homeServer) === pqc.parseHandle(this.myHandle).server : true,
       lastReconciledAt: conv.lastReconciledAt,
       cursorSeq: conv.cursorSeq,
       messages,
@@ -599,19 +793,25 @@ class Engine extends EventEmitter {
   listConversationsView() {
     return this.store
       .listConversationIds()
-      .map((id) => this.getConversationView(id))
+      .map((id) => this.store.loadConversation(id))
       .filter(Boolean)
-      .map((c) => {
-        const last = c.messages[c.messages.length - 1];
-        const other = c.participants.filter((p) => p !== this.me);
+      .map((conv) => {
+        const v = this.getConversationView(conv.convId);
+        const last = v.messages[v.messages.length - 1];
+        const others = conv.participants.filter((p) => !this.isMe(p)).map((p) => this.prettyHandle(p));
         return {
-          convId: c.convId,
-          title: other.join(', ') || c.participants.join(', '),
-          participants: c.participants,
-          kind: c.kind,
-          messageCount: c.messages.length,
+          convId: conv.convId,
+          kind: conv.kind,
+          status: conv.status || 'active',
+          name: conv.name || null,
+          title: conv.kind === 'group' ? conv.name || others.join(', ') : others.join(', ') || 'you',
+          subtitle: conv.kind === 'group' ? `${conv.participants.length} people` : others.join(', '),
+          requestFrom: (conv.status || 'active') === 'pending' ? (others[0] || 'someone') : null,
+          participants: v.participants,
+          homeServer: conv.homeServer || null,
+          messageCount: v.messages.length,
           lastText: last ? last.text : '',
-          lastAt: last ? last.sentAt : c.lastReconciledAt,
+          lastAt: last ? last.sentAt : conv.lastReconciledAt || conv.createdAt,
           lastMine: last ? last.mine : false,
           lastDisplay: last ? last.display : null,
         };

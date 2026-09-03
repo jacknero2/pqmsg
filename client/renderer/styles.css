@@ -79,6 +79,7 @@ code { color: var(--cyan); word-break: break-all; font-size: 11px; }
 .panel .row { display: flex; gap: 10px; margin-top: 8px; }
 .panel .row button { flex: 1; }
 .panel .hint { color: var(--dim); font-size: 10px; margin-top: 14px; }
+.panel .hint.tight { margin: -6px 0 12px; }
 .cursor { animation: blink 1s steps(1) infinite; color: var(--cyan); }
 @keyframes blink { 50% { opacity: 0; } }
 .kv { display: flex; gap: 10px; font-size: 11px; margin: 8px 0; }
@@ -103,6 +104,22 @@ header {
 }
 #newconv .prompt { color: var(--cyan); }
 #newconv input { flex: 0 1 240px; }
+#groupbar {
+  display: flex; align-items: center; gap: 8px;
+  padding: 8px 14px; border-bottom: 1px solid var(--line); background: var(--panel2);
+}
+#groupbar .prompt { color: var(--gold); }
+#groupbar #in-gname { flex: 0 1 160px; }
+#groupbar #in-gmembers { flex: 1 1 240px; }
+#groupbar[hidden] { display: none; }
+
+#requests .reqs-h { padding: 8px 12px 4px; font-size: 10px; text-transform: uppercase; letter-spacing: 1px; color: var(--gold); }
+.req { padding: 10px 12px; border-bottom: 1px solid var(--line); background: #1c1a10; }
+.req .q { font-size: 12px; color: #ffe9b8; }
+.req .qbtns { display: flex; gap: 8px; margin-top: 7px; }
+.req .qbtns button { font-size: 11px; padding: 3px 12px; border-radius: 5px; font-family: var(--mono); cursor: pointer; }
+.req .yes { background: #10343a; border: 1px solid #1f6f6a; color: var(--cyan); }
+.req .no { background: transparent; border: 1px solid var(--line); color: var(--dim); }
 
 main { flex: 1; display: flex; min-height: 0; }
 #sidebar {

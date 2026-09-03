@@ -38,7 +38,7 @@
           </div>
         </div>
         <label>server<input id="in-server" value="http://localhost:8787" /></label>
-        <p class="hint" style="margin:-6px 0 12px">from the list above, or the address someone gave you — an <code>https://…trycloudflare.com</code> link or <code>http://their-lan-ip:8787</code></p>
+        <p class="hint tight">from the list above, or the address someone gave you — an <code>https://…trycloudflare.com</code> link or <code>http://their-lan-ip:8787</code></p>
         <label>username<input id="in-user" placeholder="alice" autocomplete="off" /></label>
         <label>password<input id="in-pass" type="password" placeholder="••••••" /></label>
         <label>device name<input id="in-device" placeholder="(auto)" /></label>
@@ -65,13 +65,24 @@
 
       <div id="newconv">
         <span class="prompt">to:</span>
-        <input id="in-to" placeholder="username" autocomplete="off" />
-        <button id="btn-open" class="primary sm">open conversation</button>
+        <input id="in-to" placeholder="username or user@server" autocomplete="off" />
+        <button id="btn-open" class="primary sm">open</button>
+        <button id="btn-group" class="ghost sm">＋ group</button>
         <span id="newconv-msg" class="msg"></span>
+      </div>
+      <div id="groupbar" hidden>
+        <span class="prompt">group:</span>
+        <input id="in-gname" placeholder="group name" autocomplete="off" />
+        <input id="in-gmembers" placeholder="alice, bob@server, carol" autocomplete="off" />
+        <button id="btn-gcreate" class="primary sm">create</button>
+        <button id="btn-gcancel" class="ghost sm">cancel</button>
       </div>
 
       <main>
-        <aside id="sidebar"></aside>
+        <aside id="sidebar">
+          <div id="requests"></div>
+          <div id="convlist"></div>
+        </aside>
         <section id="thread">
           <div id="thread-head" class="dim">select or open a conversation</div>
           <div id="messages"></div>

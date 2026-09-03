@@ -20,7 +20,7 @@ const fs = require('fs');
 const path = require('path');
 const express = require('express');
 const { verify, canonical, publicIdFromJwk } = require('../shared/ed25519');
-const { assertPublicUrl, fetchJsonSafe } = require('./ssrf');
+const { assertPublicUrl, fetchJsonSafe } = require('../shared/ssrf');
 
 const bool = (v) => /^(1|true|yes)$/i.test(v || '');
 

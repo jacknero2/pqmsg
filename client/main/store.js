@@ -109,13 +109,17 @@ class ClientStore {
   saveConversation(conv) {
     this._writeJson(this._convPath(conv.convId), conv);
   }
-  ensureConversation(convId, participants, kind) {
+  /** @param {'active'|'pending'|'declined'} [status]  incoming convs start 'pending' (accept/decline) */
+  ensureConversation(convId, participants, kind, homeServer, name, status) {
     let c = this.loadConversation(convId);
     if (!c) {
       c = {
         convId,
         participants,
         kind: kind || (participants.length > 2 ? 'group' : 'dm'),
+        name: name || null,
+        homeServer: homeServer || null,
+        status: status || 'active',
         messages: {}, // msgId -> message record
         order: [], // canonical order (mirrors server); pending msgs appended
         cursorSeq: 0, // highest serverSeq consumed
@@ -123,6 +127,16 @@ class ClientStore {
         lastReconciledAt: 0,
       };
       this.saveConversation(c);
+    } else {
+      // fill in fields learned later (e.g. homeServer from an inbox pointer)
+      let dirty = false;
+      if (homeServer && !c.homeServer) (c.homeServer = homeServer), (dirty = true);
+      if (name && !c.name) (c.name = name), (dirty = true);
+      if (Array.isArray(participants) && participants.length > (c.participants || []).length) {
+        c.participants = participants;
+        dirty = true;
+      }
+      if (dirty) this.saveConversation(c);
     }
     return c;
   }

@@ -178,21 +178,49 @@ class GitHubStore {
   _cdir(c) {
     return `conversations/${c}`;
   }
-  async ensureConversation(convId, { kind, participants }) {
+  async ensureConversation(convId, { kind, participants, name, homeServer }) {
     return this.mutex.run(convId, async () => {
       const metaPath = `${this._cdir(convId)}/meta.json`;
       const existing = await this._getJson(metaPath);
-      if (existing) return existing;
+      if (existing) return { ...existing, created: false };
       const meta = {
         convId,
         kind: kind || 'dm',
         participants: participants || [],
+        name: name || null,
+        homeServer: homeServer || null,
         createdAt: Date.now(),
       };
       await this._putJson(metaPath, meta, `pqmsg: open conversation ${convId}`);
       await this._putJson(`${this._cdir(convId)}/order.json`, { order: [], updatedAt: Date.now() }, 'pqmsg: init order');
+      return { ...meta, created: true };
+    });
+  }
+  async setConversationParticipants(convId, participants, name) {
+    return this.mutex.run(convId, async () => {
+      const metaPath = `${this._cdir(convId)}/meta.json`;
+      const meta = await this._getJson(metaPath);
+      if (!meta) return null;
+      meta.participants = participants;
+      if (name !== undefined) meta.name = name;
+      meta.updatedAt = Date.now();
+      await this._putJson(metaPath, meta, `pqmsg: members ${convId}`);
       return meta;
     });
+  }
+  async addPointer(handleHash, pointer) {
+    return this.mutex.run('ptr:' + handleHash, async () => {
+      const p = `pointers/${handleHash}.json`;
+      const list = (await this._getJson(p)) || [];
+      const i = list.findIndex((x) => x.convId === pointer.convId);
+      if (i >= 0) list[i] = { ...list[i], ...pointer, updatedAt: Date.now() };
+      else list.push({ ...pointer, addedAt: Date.now() });
+      await this._putJson(p, list, `pqmsg: pointer ${pointer.convId}`);
+      return pointer;
+    });
+  }
+  async listPointers(handleHash) {
+    return (await this._getJson(`pointers/${handleHash}.json`)) || [];
   }
   async appendMessage(convId, envelope) {
     return this.mutex.run(convId, async () => {

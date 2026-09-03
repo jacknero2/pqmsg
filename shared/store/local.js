@@ -122,17 +122,58 @@ class LocalStore {
   _cdir(convId) {
     return path.join(this.convDir, convId);
   }
-  async ensureConversation(convId, { kind, participants }) {
+  async ensureConversation(convId, { kind, participants, name, homeServer }) {
     return this.mutex.run(convId, async () => {
       const metaPath = path.join(this._cdir(convId), 'meta.json');
       const existing = await this._readJson(metaPath, null);
-      if (existing) return existing;
-      const meta = { convId, kind: kind || 'dm', participants: participants || [], createdAt: Date.now() };
+      if (existing) {
+        existing.created = false;
+        return existing;
+      }
+      const meta = {
+        convId,
+        kind: kind || 'dm',
+        participants: participants || [],
+        name: name || null,
+        homeServer: homeServer || null,
+        createdAt: Date.now(),
+      };
       await this._writeJson(metaPath, meta);
       await this._writeJson(path.join(this._cdir(convId), 'order.json'), { order: [], updatedAt: Date.now() });
       await fsp.mkdir(path.join(this._cdir(convId), 'messages'), { recursive: true });
+      return { ...meta, created: true };
+    });
+  }
+  /** Replace a group's participant list / name (membership change). */
+  async setConversationParticipants(convId, participants, name) {
+    return this.mutex.run(convId, async () => {
+      const metaPath = path.join(this._cdir(convId), 'meta.json');
+      const meta = await this._readJson(metaPath, null);
+      if (!meta) return null;
+      meta.participants = participants;
+      if (name !== undefined) meta.name = name;
+      meta.updatedAt = Date.now();
+      await this._writeJson(metaPath, meta);
       return meta;
     });
+  }
+  // ---- federation inbox pointers (conversations hosted on other servers) ----
+  _pdir() {
+    return path.join(this.dataDir, 'pointers');
+  }
+  async addPointer(handleHash, pointer) {
+    return this.mutex.run('ptr:' + handleHash, async () => {
+      const p = path.join(this._pdir(), handleHash + '.json');
+      const list = await this._readJson(p, []);
+      const i = list.findIndex((x) => x.convId === pointer.convId);
+      if (i >= 0) list[i] = { ...list[i], ...pointer, updatedAt: Date.now() };
+      else list.push({ ...pointer, addedAt: Date.now() });
+      await this._writeJson(p, list);
+      return pointer;
+    });
+  }
+  async listPointers(handleHash) {
+    return this._readJson(path.join(this._pdir(), handleHash + '.json'), []);
   }
   async appendMessage(convId, envelope) {
     return this.mutex.run(convId, async () => {

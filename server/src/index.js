@@ -20,9 +20,13 @@ const { config } = require('./config');
 const { Presence } = require('./presence');
 const { createStore } = require('../../shared/store');
 const { RegistryAnnouncer, loadServerIdentity } = require('./registry-client');
+const fed = require('./federation');
 const proto = require('../../shared/protocol');
 const pqc = require('../../shared/crypto');
+const crypto2 = require('crypto');
 const PKG_VERSION = require('../../package.json').version;
+
+const handleHash = (h) => crypto2.createHash('sha256').update(pqc.normHandle(h)).digest('hex').slice(0, 32);
 
 const app = express();
 app.use(express.json({ limit: '4mb' }));
@@ -72,11 +76,55 @@ const wrap = (fn) => (req, res) =>
     res.status(e.status || 500).json({ error: e.message || 'server error' });
   });
 
-function expectedConvId(kind, participants) {
-  const p = participants.map(proto.normUser);
-  if (kind === 'group' || p.length > 2) return pqc.groupConvId(p);
-  return pqc.dmConvId(p[0], p[1]);
+const GROUP_ID_RE = /^grp_[0-9a-f]{32}$/;
+/** DMs have a deterministic id from the two handles; groups get any grp_<hex> minted at creation. */
+function convIdOk(convId, kind, handles) {
+  if (kind === 'group' || handles.length > 2) return GROUP_ID_RE.test(convId);
+  return convId === pqc.dmConvId(handles[0], handles[1]);
 }
+
+/**
+ * Resolve who is calling.
+ *  - `X-PQMSG-Auth: <b64 JSON {handle, deviceId, ts, sig}>` — ML-DSA over a
+ *    canonical challenge, verified against that handle's IDS (federated). Works
+ *    for callers with no account here.
+ *  - `Authorization: Bearer <token>` — a local account.
+ * Sets req.actor = { handle, deviceId|null, local } or leaves it null.
+ */
+async function authActor(req, res, next) {
+  try {
+    const hdr = req.get('x-pqmsg-auth');
+    if (hdr) {
+      let a;
+      try {
+        a = JSON.parse(Buffer.from(hdr, 'base64').toString('utf8'));
+      } catch {
+        return res.status(400).json({ error: 'bad_auth_header' });
+      }
+      if (!a.handle || !a.deviceId || typeof a.ts !== 'number' || !a.sig) return res.status(400).json({ error: 'bad_auth_header' });
+      if (Math.abs(Date.now() - a.ts) > 300000) return res.status(401).json({ error: 'stale_auth' });
+      const ids = await fed.resolveIds(a.handle, { config, store, req });
+      const dev = ids && (ids.devices || []).find((d) => d.deviceId === a.deviceId);
+      const challenge = { m: 'pqmsg-auth', method: req.method, path: req.path, convId: req.params.convId || null, deviceId: a.deviceId, ts: a.ts };
+      if (!dev || !pqc.verifyRequest(challenge, a.sig, dev.sigPublicKey)) return res.status(401).json({ error: 'bad_auth_sig' });
+      req.actor = { handle: pqc.normHandle(a.handle), deviceId: a.deviceId, local: fed.isSelf(pqc.parseHandle(a.handle).server, config, req) };
+      return next();
+    }
+    const h = req.get('authorization') || '';
+    const tok = h.startsWith('Bearer ') ? h.slice(7) : null;
+    const claims = tok && proto.verifyToken(SECRETS.tokenSecret, tok);
+    if (claims) {
+      const origin = fed.reqOrigin(req) || config.serverPublicUrl || `http://localhost:${config.port}`;
+      req.actor = { handle: pqc.formatHandle({ username: claims.username, server: origin }), deviceId: null, local: true };
+      return next();
+    }
+    req.actor = null;
+    next();
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+}
+const requireActor = (req, res, next) => (req.actor ? next() : res.status(401).json({ error: 'unauthorized' }));
 
 // --------------------------------------------------------------------------
 // auth + enrollment
@@ -136,9 +184,10 @@ app.get(
   })
 );
 
+// public: the IDS is device *public* keys + a safety number, and federated
+// peers/clients must be able to read it without an account here
 app.get(
   '/api/ids/:username',
-  auth,
   wrap(async (req, res) => {
     const ids = await store.getIds(proto.normUser(req.params.username));
     if (!ids) throw Object.assign(new Error('no such user'), { status: 404 });
@@ -150,52 +199,115 @@ app.get(
 // --------------------------------------------------------------------------
 // messaging
 // --------------------------------------------------------------------------
+/** wake the WS sockets of participants whose account lives on THIS server */
+function wakeLocal(handles, convId, latestSeq) {
+  const local = new Set(handles.filter((h) => fed.isSelf(pqc.parseHandle(h).server, config)).map((h) => pqc.parseHandle(h).username));
+  for (const { ws, username } of liveClients.values()) {
+    if (local.has(username) && ws.readyState === 1) {
+      ws.send(JSON.stringify({ type: 'wake', convId, latestSeq, serverTime: Date.now() }));
+    }
+  }
+}
+
 app.post(
   '/api/conv/:convId/messages',
-  auth,
   wrap(async (req, res) => {
-    const { envelope, participants, kind } = req.body;
+    // Auth here is the envelope signature itself — no local account/token needed,
+    // so a client whose home server is elsewhere can post to this conversation.
+    const { envelope, participants, kind, name } = req.body;
     if (!envelope || !Array.isArray(participants) || participants.length < 2) {
       throw Object.assign(new Error('need envelope + participants[]'), { status: 400 });
     }
-    const parts = participants.map(proto.normUser);
-    if (!parts.includes(req.user)) throw Object.assign(new Error('not a participant'), { status: 403 });
-    if (proto.normUser(envelope.sender) !== req.user) {
-      throw Object.assign(new Error('sender/token mismatch'), { status: 403 });
+    let parts;
+    try {
+      parts = participants.map(pqc.normHandle);
+    } catch {
+      throw Object.assign(new Error('participants must be user@server handles'), { status: 400 });
     }
     const convId = req.params.convId;
-    if (convId !== expectedConvId(kind, parts)) {
-      throw Object.assign(new Error('convId does not match participants'), { status: 400 });
+    const isGroup = kind === 'group' || parts.length > 2;
+
+    if (!parts.includes(pqc.normHandle(envelope.sender))) {
+      throw Object.assign(new Error('sender is not a participant'), { status: 403 });
     }
-    // authenticate the envelope against the sender device's signing key in the IDS
-    const senderIds = await store.getIds(req.user);
-    const dev = senderIds && senderIds.devices.find((d) => d.deviceId === envelope.senderDevice);
+    if (!convIdOk(convId, kind, parts)) {
+      throw Object.assign(new Error('convId does not match the conversation'), { status: 400 });
+    }
+    const home = pqc.homeServer(parts);
+    if (!fed.isSelf(home, config, req)) {
+      return res.status(421).json({ error: 'misdirected', homeServer: home });
+    }
+    // for an existing group, the sender must be a current member (membership is mutable)
+    const existing = await store.getConversationMeta(convId);
+    if (isGroup && existing && !(existing.participants || []).map(pqc.normHandle).includes(pqc.normHandle(envelope.sender))) {
+      throw Object.assign(new Error('not a member of this group'), { status: 403 });
+    }
+
+    // authenticate the envelope against the sender device's signing key (resolved
+    // from the sender's own server if they are not local)
+    const senderIds = await fed.resolveIds(envelope.sender, { config, store, req });
+    const dev = senderIds && (senderIds.devices || []).find((d) => d.deviceId === envelope.senderDevice);
     if (!dev) throw Object.assign(new Error('unknown sender device'), { status: 400 });
     if (!pqc.verifyEnvelope(envelope, dev.sigPublicKey)) {
       throw Object.assign(new Error('bad envelope signature'), { status: 400 });
     }
 
-    await store.ensureConversation(convId, { kind: kind || (parts.length > 2 ? 'group' : 'dm'), participants: parts });
-    const stored = await store.appendMessage(convId, envelope);
-    presence.log('message', {
-      convId,
-      msgId: stored.msgId,
-      sender: stored.sender,
-      serverSeq: stored.serverSeq,
-      recipients: stored.recipients.length,
+    const meta = await store.ensureConversation(convId, {
+      kind: isGroup ? 'group' : 'dm',
+      participants: existing ? existing.participants : parts,
+      name: name || (existing && existing.name) || null,
+      homeServer: home,
     });
-    // wake other participants' live sockets
-    wake(parts, convId, stored.serverSeq);
+    const stored = await store.appendMessage(convId, envelope);
+    presence.log('message', { convId, msgId: stored.msgId, sender: stored.sender, serverSeq: stored.serverSeq, recipients: stored.recipients.length });
+    wakeLocal(meta.participants || parts, convId, stored.serverSeq);
+    if (meta.created || stored.serverSeq <= 2) {
+      fed.notifyParticipantServers({ participants: meta.participants || parts, convId, homeServer: home, kind: isGroup ? 'group' : 'dm', name: meta.name, config, req });
+    }
     res.json({ stored });
+  })
+);
+
+/** set/replace a group's member list — only an existing member may call it */
+app.post(
+  '/api/conv/:convId/members',
+  authActor,
+  requireActor,
+  wrap(async (req, res) => {
+    const meta = await store.getConversationMeta(req.params.convId);
+    if (!meta) throw Object.assign(new Error('no such conversation'), { status: 404 });
+    if (meta.kind !== 'group') throw Object.assign(new Error('not a group'), { status: 400 });
+    if (!fed.isSelf(meta.homeServer || pqc.homeServer(meta.participants), config, req)) {
+      return res.status(421).json({ error: 'misdirected', homeServer: meta.homeServer });
+    }
+    if (!(meta.participants || []).map(pqc.normHandle).includes(req.actor.handle)) {
+      throw Object.assign(new Error('only a member can change membership'), { status: 403 });
+    }
+    let next;
+    try {
+      next = (req.body.participants || []).map(pqc.normHandle);
+    } catch {
+      throw Object.assign(new Error('bad participants'), { status: 400 });
+    }
+    if (next.length < 2) throw Object.assign(new Error('a group needs >= 2 members'), { status: 400 });
+    const updated = await store.setConversationParticipants(req.params.convId, next, req.body.name);
+    presence.log('members', { convId: req.params.convId, by: req.actor.handle, count: next.length });
+    wakeLocal(next, req.params.convId, (await store.getOrder(req.params.convId)).length);
+    fed.notifyParticipantServers({ participants: next, convId: req.params.convId, homeServer: meta.homeServer, kind: 'group', name: updated.name, config, req });
+    res.json({ ok: true, participants: next });
   })
 );
 
 async function participantGuard(req, res, next) {
   try {
-    // hot path (hit on every client poll) — read one meta.json, not the whole tree
     const meta = await store.getConversationMeta(req.params.convId);
     if (!meta) return res.status(404).json({ error: 'no such conversation' });
-    if (!(meta.participants || []).includes(req.user)) return res.status(403).json({ error: 'not a participant' });
+    if (!fed.isSelf(meta.homeServer || pqc.homeServer(meta.participants), config, req)) {
+      return res.status(421).json({ error: 'misdirected', homeServer: meta.homeServer });
+    }
+    if (!req.actor || !(meta.participants || []).map(pqc.normHandle).includes(req.actor.handle)) {
+      return res.status(403).json({ error: 'not a participant' });
+    }
     req.convMeta = meta;
     next();
   } catch (e) {
@@ -205,7 +317,7 @@ async function participantGuard(req, res, next) {
 
 app.get(
   '/api/conv/:convId/messages',
-  auth,
+  authActor,
   participantGuard,
   wrap(async (req, res) => {
     const sinceSeq = parseInt(req.query.sinceSeq || '0', 10);
@@ -219,7 +331,7 @@ app.get(
 
 app.get(
   '/api/conv/:convId/order',
-  auth,
+  authActor,
   participantGuard,
   wrap(async (req, res) => {
     res.json({ convId: req.params.convId, order: await store.getOrder(req.params.convId) });
@@ -228,12 +340,13 @@ app.get(
 
 app.post(
   '/api/conv/:convId/messages/:msgId/delivered',
-  auth,
+  authActor,
   participantGuard,
   wrap(async (req, res) => {
     const deviceId = String(req.body.deviceId || '');
-    const owner = await store.findUserByDevice(deviceId);
-    if (owner !== req.user) throw Object.assign(new Error('device does not belong to you'), { status: 403 });
+    if (!req.actor.deviceId || req.actor.deviceId !== deviceId) {
+      throw Object.assign(new Error('ack must be signed by the acking device'), { status: 403 });
+    }
     const msg = await store.getMessage(req.params.convId, req.params.msgId);
     if (!msg) throw Object.assign(new Error('no such message'), { status: 404 });
     if (!msg.recipients.some((r) => r.deviceId === deviceId)) {
@@ -241,26 +354,56 @@ app.post(
     }
     const updated = await store.markDelivered(req.params.convId, req.params.msgId, deviceId, Date.now());
     presence.log('delivered', { convId: req.params.convId, msgId: req.params.msgId, deviceId });
-    wake([msg.sender], req.params.convId, updated.serverSeq);
+    wakeLocal([msg.sender], req.params.convId, updated.serverSeq);
     res.json({ ok: true, deliveries: updated.deliveries });
+  })
+);
+
+/** server-to-server: a remote home server tells us one of our users is in a conversation there */
+app.post(
+  '/api/federated/notify',
+  wrap(async (req, res) => {
+    const { convId, participants, homeServer, kind, name } = req.body || {};
+    let parts;
+    try {
+      parts = (participants || []).map(pqc.normHandle);
+    } catch {
+      throw Object.assign(new Error('bad participants'), { status: 400 });
+    }
+    if (!convId || !homeServer || parts.length < 2) throw Object.assign(new Error('bad notify'), { status: 400 });
+    // the claimed home must actually be the deterministic home for these members
+    if (kind !== 'group' && pqc.normServer(homeServer) !== pqc.homeServer(parts)) {
+      throw Object.assign(new Error('home server does not match participants'), { status: 400 });
+    }
+    if (fed.isSelf(homeServer, config, req)) return res.json({ ok: true, ignored: 'self' }); // we are the home
+    let added = 0;
+    for (const p of parts) {
+      if (fed.isSelf(pqc.parseHandle(p).server, config, req)) {
+        await store.addPointer(handleHash(p), { convId, homeServer: pqc.normServer(homeServer), participants: parts, kind: kind || 'dm', name: name || null });
+        added++;
+      }
+    }
+    res.json({ ok: true, added });
   })
 );
 
 app.get(
   '/api/inbox',
-  auth,
+  authActor,
+  requireActor,
   wrap(async (req, res) => {
-    // one directory scan, then fan out the per-conversation order reads in parallel
-    const mine = (await store.listConversations()).filter((c) => (c.participants || []).includes(req.user));
+    const me = req.actor.handle;
+    const local = (await store.listConversations())
+      .filter((c) => (c.participants || []).map(pqc.normHandle).includes(me))
+      .map((c) => ({ convId: c.convId, participants: c.participants, kind: c.kind, name: c.name || null, homeServer: c.homeServer || fed.reqOrigin(req), local: true }));
+    const seen = new Set(local.map((c) => c.convId));
+    const pointers = (await store.listPointers(handleHash(me)))
+      .filter((p) => !seen.has(p.convId))
+      .map((p) => ({ convId: p.convId, participants: p.participants, kind: p.kind, name: p.name || null, homeServer: p.homeServer, local: false }));
     const conversations = await Promise.all(
-      mine.map(async (c) => ({
-        convId: c.convId,
-        participants: c.participants,
-        kind: c.kind,
-        latestSeq: (await store.getOrder(c.convId)).length,
-      }))
+      local.map(async (c) => ({ ...c, latestSeq: (await store.getOrder(c.convId)).length }))
     );
-    res.json({ conversations, serverTime: Date.now() });
+    res.json({ conversations: [...conversations, ...pointers], serverTime: Date.now() });
   })
 );
 
@@ -343,6 +486,8 @@ app.get('/api/serverinfo', (req, res) =>
     description: config.serverDescription || null,
     region: config.serverRegion || null,
     publicId: serverIdentity ? serverIdentity.publicId : null,
+    publicUrl: config.serverPublicUrl || null,
+    federation: true,
     serverVersion: PKG_VERSION,
     backend: store ? store.kind : null,
     clients: presence.list().length,
@@ -416,15 +561,6 @@ presence.onBroadcast((kind, payload) => {
   const frame = JSON.stringify({ type: kind, payload });
   for (const ws of liveAdmins) if (ws.readyState === 1) ws.send(frame);
 });
-
-function wake(usernames, convId, latestSeq) {
-  const set = new Set(usernames.map(proto.normUser));
-  for (const { ws, username } of liveClients.values()) {
-    if (set.has(username) && ws.readyState === 1) {
-      ws.send(JSON.stringify({ type: 'wake', convId, latestSeq, serverTime: Date.now() }));
-    }
-  }
-}
 
 // ws heartbeat
 setInterval(() => {

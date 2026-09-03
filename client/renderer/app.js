@@ -1,5 +1,7 @@
 'use strict';
 const $ = (id) => document.getElementById(id);
+const esc = (s) => String(s ?? '').replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
+const short = (s) => String(s || '').slice(0, 10);
 let state = null;
 let activeConv = null;
 let lastRenderKey = '';
@@ -130,6 +132,39 @@ async function openConv() {
   selectConv(activeConv);
 }
 
+// ---------- new group ----------
+$('btn-group').onclick = () => {
+  $('groupbar').hidden = !$('groupbar').hidden;
+};
+$('btn-gcancel').onclick = () => {
+  $('groupbar').hidden = true;
+};
+$('btn-gcreate').onclick = async () => {
+  const m = $('newconv-msg');
+  const name = $('in-gname').value.trim();
+  const members = $('in-gmembers').value.split(',').map((s) => s.trim()).filter(Boolean);
+  if (!name || members.length < 2) {
+    m.className = 'msg';
+    m.textContent = 'need a name and at least 2 members';
+    return;
+  }
+  m.className = 'msg';
+  m.textContent = 'resolving members…';
+  const r = await window.pqmsg.startGroup(name, members);
+  if (!r.ok) {
+    m.textContent = r.error;
+    return;
+  }
+  m.className = 'msg ok';
+  m.textContent = 'group created';
+  $('groupbar').hidden = true;
+  $('in-gname').value = $('in-gmembers').value = '';
+  activeConv = r.data;
+  await window.pqmsg.sendMessage(activeConv, `created “${name}”`);
+  await refresh();
+  selectConv(activeConv);
+};
+
 // ---------- header / settings ----------
 $('btn-sync').onclick = () => window.pqmsg.syncNow();
 $('btn-settings').onclick = () => {
@@ -196,15 +231,31 @@ function render() {
   $('sync-status').textContent =
     (state.syncing ? 'syncing… ' : 'synced ' + ago) + (state.lastSyncError ? ' · ⚠ ' + state.lastSyncError : '');
 
-  // sidebar
-  const sb = $('sidebar');
+  // conversation requests (must be accepted before messages flow)
+  const reqs = state.conversations.filter((c) => c.status === 'pending');
+  const rb = $('requests');
+  rb.innerHTML = reqs.length ? '<div class="reqs-h">requests</div>' : '';
+  for (const c of reqs) {
+    const div = document.createElement('div');
+    div.className = 'req';
+    const who = c.kind === 'group' ? `group “${esc(c.name || 'group')}”` : esc(c.requestFrom || 'someone');
+    div.innerHTML = `<div class="q">accept conversation from ${who}?</div>
+      <div class="qbtns"><button class="yes">yes</button><button class="no">no</button></div>`;
+    div.querySelector('.yes').onclick = () => window.pqmsg.acceptConversation(c.convId);
+    div.querySelector('.no').onclick = () => window.pqmsg.declineConversation(c.convId);
+    rb.appendChild(div);
+  }
+
+  // active conversations
+  const sb = $('convlist');
   sb.innerHTML = '';
-  for (const c of state.conversations) {
+  for (const c of state.conversations.filter((x) => x.status === 'active')) {
     const div = document.createElement('div');
     div.className = 'conv' + (c.convId === activeConv ? ' active' : '');
     const tagClass = c.lastMine ? (c.lastDisplay === 'delivered' ? 'tag' : 'tag red') : 'tag';
     const tag = c.lastMine ? `<span class="${tagClass}">${c.lastDisplay === 'delivered' ? '✓ delivered' : '· pending'}</span> ` : '';
-    div.innerHTML = `<div class="name">${esc(c.title)}</div><div class="prev">${tag}${esc(c.lastText || '…')}</div>`;
+    const icon = c.kind === 'group' ? '👥 ' : '';
+    div.innerHTML = `<div class="name">${icon}${esc(c.title)}</div><div class="prev">${tag}${esc(c.lastText || '…')}</div>`;
     div.onclick = () => selectConv(c.convId);
     sb.appendChild(div);
   }
@@ -216,9 +267,12 @@ async function renderThread() {
   const r = await window.pqmsg.getConversation(activeConv);
   if (!r.ok || !r.data) return;
   const conv = r.data;
-  const others = conv.participants.filter((p) => p !== state.username);
+  const others = conv.participants.filter((p) => p !== '@' + state.username);
   const recon = conv.lastReconciledAt ? Math.round((Date.now() - conv.lastReconciledAt) / 1000) + 's ago' : '—';
-  $('thread-head').innerHTML = `<b>${esc(others.join(', ') || conv.participants.join(', '))}</b> · ${conv.kind} · seq ${conv.cursorSeq} · reconciled ${recon}`;
+  const title = conv.kind === 'group' ? `👥 ${esc(conv.name || 'group')}` : esc(others.join(', ') || 'you');
+  const membersLine = conv.kind === 'group' ? ` · ${esc(conv.participants.join(', '))}` : '';
+  const homeLine = conv.homeIsMine ? '' : ` · hosted on ${esc((conv.homeServer || '').replace(/^https?:\/\//, ''))}`;
+  $('thread-head').innerHTML = `<b>${title}</b>${membersLine} · ${conv.kind} · seq ${conv.cursorSeq} · reconciled ${recon}${homeLine}`;
   $('composer').hidden = false;
 
   const key = conv.messages.map((m) => m.msgId + m.display + m.serverSeq).join('|');
@@ -286,9 +340,6 @@ function fmtEvent(ev) {
   const f = map[ev.kind];
   return f ? f(ev) : esc(ev.kind);
 }
-
-const esc = (s) => String(s ?? '').replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
-const short = (s) => String(s || '').slice(0, 10);
 
 async function refresh() {
   const r = await window.pqmsg.snapshot();

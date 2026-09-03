@@ -129,7 +129,7 @@ async function waitHealth() {
   let convId;
   try {
     convId = await alice.startConversation('bob');
-    assert.strictEqual(convId, pqc.dmConvId('alice', 'bob'));
+    assert.strictEqual(convId, pqc.dmConvId(alice.myHandle, bob.myHandle));
     ok('alice resolved bob via IDS, conversation id = ' + convId);
   } catch (e) {
     bad('startConversation', e);
@@ -137,6 +137,13 @@ async function waitHealth() {
 
   try {
     await alice.sendMessage(convId, 'hello bob — post-quantum secured');
+    // bob must accept the incoming conversation before messages flow
+    await until(async () => {
+      await bob.syncOnce('test');
+      const v = bob.listConversationsView().find((c) => c.convId === convId);
+      return v && v.status === 'pending';
+    });
+    bob.acceptConversation(convId);
     const m = await until(async () => {
       await bob.syncOnce('test');
       return bob.getConversationView(convId).messages.find((x) => x.text === 'hello bob — post-quantum secured') || null;
