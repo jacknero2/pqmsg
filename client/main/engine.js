@@ -19,16 +19,18 @@ const { EventEmitter } = require('events');
 const WebSocket = require('ws');
 const { Api } = require('./api');
 const { ClientStore } = require('./store');
+const disc = require('./discovery');
 const pqc = require('../../shared/crypto');
 
 const norm = (u) => String(u || '').trim().toLowerCase();
 const TRAILING_WINDOW = 30; // messages re-checked each cycle for order + delivery
 
 class Engine extends EventEmitter {
-  constructor(profile, baseDir) {
+  constructor(profile, baseDir, appVersion) {
     super();
     this.store = new ClientStore(profile, baseDir);
     this.identity = this.store.loadIdentity();
+    this.appVersion = appVersion || require('../../package.json').version;
     this.api = null;
     this.ws = null;
     this.connected = false;
@@ -41,6 +43,12 @@ class Engine extends EventEmitter {
     this.lastSyncAt = 0;
     this.lastSyncError = null;
     this.log = [];
+    // server discovery + version gate
+    this.servers = this.store.loadServerCache();
+    this.registryUrl = '';
+    this.updateGate = null; // { required, current, downloadUrl, source } -> hard block
+    this.updateInfo = null; // { latest, downloadUrl }                   -> soft banner
+    this._versionFloor = null;
   }
 
   event(kind, detail) {
@@ -73,7 +81,60 @@ class Engine extends EventEmitter {
       lastSyncError: this.lastSyncError,
       conversations: this.listConversationsView(),
       log: this.log.slice(-60),
+      appVersion: this.appVersion,
+      servers: this.servers,
+      registryUrl: this.registryUrl,
+      updateGate: this.updateGate,
+      updateInfo: this.updateInfo,
     };
+  }
+
+  // -- server discovery + version gate --------------------------------
+  async discoverServers() {
+    const cfg = this.store.loadAppConfig();
+    const { registryUrl, servers } = await disc.discover({
+      registryUrl: cfg.registryUrl || process.env.PQMSG_REGISTRY_URL,
+      pinned: this.store.loadPinnedServers(),
+    });
+    this.registryUrl = registryUrl;
+    // probe all in parallel for liveness / name / version reqs
+    const probed = await Promise.all(
+      servers.map(async (s) => ({ ...s, ...(await disc.probe(s.url)) }))
+    );
+    probed.sort((a, b) => (b.online ? 1 : 0) - (a.online ? 1 : 0) || (a.latencyMs || 9e9) - (b.latencyMs || 9e9));
+    this.servers = probed;
+    this.store.saveServerCache(probed);
+    await this.checkVersion(); // a probe may raise the global picture
+    this.emit('update');
+    return probed;
+  }
+
+  pinServer({ name, url }) {
+    url = String(url || '').replace(/\/+$/, '');
+    if (!/^https?:\/\//.test(url)) throw new Error('enter a full http(s):// URL');
+    const list = this.store.loadPinnedServers().filter((s) => s.url !== url);
+    list.push({ name: name || url, url });
+    this.store.savePinnedServers(list);
+    return this.discoverServers();
+  }
+  unpinServer(url) {
+    this.store.savePinnedServers(this.store.loadPinnedServers().filter((s) => s.url !== url));
+    return this.discoverServers();
+  }
+
+  /** Recompute the update gate from the global floor + (optionally) a server's serverinfo. */
+  async checkVersion(serverInfo) {
+    if (!this._versionFloor) this._versionFloor = (await disc.getVersionFloor()) || {};
+    if (!serverInfo && this.identity?.serverUrl) {
+      serverInfo = await disc.probe(this.identity.serverUrl).catch(() => null);
+    }
+    const { gate, update } = disc.versionVerdict(this.appVersion, this._versionFloor, serverInfo);
+    const changed = JSON.stringify([gate, update]) !== JSON.stringify([this.updateGate, this.updateInfo]);
+    this.updateGate = gate;
+    this.updateInfo = update;
+    if (gate) this.event('update-required', { required: gate.required, current: gate.current });
+    if (changed) this.emit('update');
+    return gate;
   }
 
   // -- account lifecycle -------------------------------------------------
@@ -86,6 +147,16 @@ class Engine extends EventEmitter {
 
   async login({ serverUrl, username, password, deviceName }) {
     username = norm(username);
+
+    // version gate — refuse to enroll against a server that requires a newer client
+    const info = await disc.probe(serverUrl).catch(() => null);
+    const gate = await this.checkVersion(info || undefined);
+    if (gate) {
+      const err = new Error(`this server needs pqmsg ≥ ${gate.required} (you have ${gate.current})`);
+      err.code = 'UPDATE_REQUIRED';
+      throw err;
+    }
+
     const api = new Api(serverUrl);
     const { token } = await api.login(username, password);
     api.setToken(token);
@@ -129,6 +200,9 @@ class Engine extends EventEmitter {
   }
 
   async resume() {
+    this.checkVersion().catch(() => {}); // global floor, even before login
+    this._verTimer = setInterval(() => this.checkVersion().catch(() => {}), 6 * 3600 * 1000);
+    this._verTimer.unref && this._verTimer.unref();
     if (!this.identity) return;
     this.api = new Api(this.identity.serverUrl, this.identity.token);
     try {

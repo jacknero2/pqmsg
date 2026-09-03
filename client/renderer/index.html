@@ -7,13 +7,38 @@
     <link rel="stylesheet" href="styles.css" />
   </head>
   <body>
+    <!-- soft "update available" strip -->
+    <div id="update-banner" hidden>
+      <span id="ub-text"></span>
+      <button id="ub-btn" class="mini" type="button">get it</button>
+      <button id="ub-x" class="mini" type="button">✕</button>
+    </div>
+
+    <!-- hard "update required" gate -->
+    <section id="update-required" class="overlay" hidden>
+      <div class="panel">
+        <h2>update required<span class="cursor">_</span></h2>
+        <p id="ur-text" class="dim"></p>
+        <button id="ur-btn" class="primary" type="button">download the update</button>
+        <p class="hint">install the new version, then reopen pqmsg.</p>
+      </div>
+    </section>
+
     <!-- login / enrollment -->
     <section id="login" class="overlay">
       <div class="panel">
         <h1>pqmsg<span class="cursor">_</span></h1>
         <p class="sub">post-quantum end-to-end messaging · ML-KEM-1024 · ML-DSA-87 · AES-256-GCM</p>
+        <div id="server-picker">
+          <div class="sp-head"><span>pick a server</span><button id="sp-refresh" class="mini" type="button">↻ refresh</button></div>
+          <div id="sp-list" class="sp-list"><span class="dim">discovering…</span></div>
+          <div class="sp-add">
+            <input id="sp-url" placeholder="or paste a server URL" autocomplete="off" />
+            <button id="sp-add-btn" class="mini" type="button">add</button>
+          </div>
+        </div>
         <label>server<input id="in-server" value="http://localhost:8787" /></label>
-        <p class="hint" style="margin:-6px 0 12px">the address from whoever runs your pqmsg server — e.g. an <code>https://…trycloudflare.com</code> link, or <code>http://their-lan-ip:8787</code></p>
+        <p class="hint" style="margin:-6px 0 12px">from the list above, or the address someone gave you — an <code>https://…trycloudflare.com</code> link or <code>http://their-lan-ip:8787</code></p>
         <label>username<input id="in-user" placeholder="alice" autocomplete="off" /></label>
         <label>password<input id="in-pass" type="password" placeholder="••••••" /></label>
         <label>device name<input id="in-device" placeholder="(auto)" /></label>

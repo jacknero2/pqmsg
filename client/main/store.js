@@ -51,6 +51,26 @@ class ClientStore {
     this._writeJson(this._p('identity.json'), id);
   }
 
+  // server discovery ------------------------------------------------
+  loadAppConfig() {
+    return this._readJson(this._p('app-config.json'), {});
+  }
+  saveAppConfig(patch) {
+    this._writeJson(this._p('app-config.json'), { ...this.loadAppConfig(), ...patch });
+  }
+  loadPinnedServers() {
+    return this._readJson(this._p('pinned-servers.json'), []);
+  }
+  savePinnedServers(list) {
+    this._writeJson(this._p('pinned-servers.json'), list);
+  }
+  loadServerCache() {
+    return this._readJson(this._p('server-cache.json'), []);
+  }
+  saveServerCache(list) {
+    this._writeJson(this._p('server-cache.json'), list);
+  }
+
   // contacts ----------------------------------------------------------
   loadContacts() {
     return this._readJson(this._p('contacts.json'), {});

@@ -7,6 +7,7 @@ contextBridge.exposeInMainWorld('srv', {
   stop: () => ipcRenderer.invoke('stop'),
   tunnelStart: () => ipcRenderer.invoke('tunnel-start'),
   tunnelStop: () => ipcRenderer.invoke('tunnel-stop'),
+  setListing: (patch) => ipcRenderer.invoke('set-listing', patch),
   openDashboard: () => ipcRenderer.invoke('open-dashboard'),
   openData: () => ipcRenderer.invoke('open-data'),
   copy: (text) => ipcRenderer.invoke('copy', text),

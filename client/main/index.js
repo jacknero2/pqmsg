@@ -1,6 +1,6 @@
 'use strict';
 const path = require('path');
-const { app, BrowserWindow, ipcMain } = require('electron');
+const { app, BrowserWindow, ipcMain, shell } = require('electron');
 const { Engine } = require('./engine');
 
 const PROFILE = process.env.PQMSG_PROFILE || 'default';
@@ -51,7 +51,7 @@ function createWindow() {
 }
 
 app.whenReady().then(async () => {
-  engine = new Engine(PROFILE, app.getPath('userData'));
+  engine = new Engine(PROFILE, app.getPath('userData'), app.getVersion());
   await engine.resume();
   createWindow();
 
@@ -74,6 +74,12 @@ app.whenReady().then(async () => {
   H('pqmsg:syncNow', () => engine.syncOnce('manual'));
   H('pqmsg:setSyncInterval', (a) => engine.setSyncInterval(a.ms));
   H('pqmsg:contact', (a) => engine.refreshContact(a.username, true));
+  H('pqmsg:discoverServers', () => engine.discoverServers());
+  H('pqmsg:pinServer', (a) => engine.pinServer(a));
+  H('pqmsg:unpinServer', (a) => engine.unpinServer(a.url));
+  H('pqmsg:openExternal', (a) => {
+    if (/^https?:\/\//.test(a.url || '')) shell.openExternal(a.url);
+  });
 
   app.on('activate', () => {
     if (BrowserWindow.getAllWindows().length === 0) createWindow();

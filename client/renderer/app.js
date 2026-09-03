@@ -39,6 +39,77 @@ $('btn-login').onclick = async () => {
   }
 };
 
+// ---------- server picker ----------
+$('sp-refresh').onclick = () => {
+  $('sp-list').innerHTML = '<span class="dim">discovering…</span>';
+  window.pqmsg.discoverServers();
+};
+$('sp-add-btn').onclick = async () => {
+  const url = $('sp-url').value.trim();
+  if (!url) return;
+  const r = await window.pqmsg.pinServer(url, url);
+  if (!r.ok) {
+    $('newconv-msg') && ($('newconv-msg').textContent = r.error);
+    alert(r.error);
+  } else {
+    $('sp-url').value = '';
+  }
+};
+$('sp-url').addEventListener('keydown', (e) => e.key === 'Enter' && $('sp-add-btn').click());
+
+function renderServerPicker(s) {
+  const list = $('sp-list');
+  const servers = s.servers || [];
+  if (!servers.length) {
+    list.innerHTML = '<span class="dim">no servers found — paste a URL below, or ask a friend for theirs</span>';
+    return;
+  }
+  const cur = $('in-server').value.trim().replace(/\/+$/, '');
+  list.innerHTML = servers
+    .map((sv) => {
+      const url = (sv.url || '').replace(/\/+$/, '');
+      const name = sv.name || url;
+      const lat = sv.online ? `${sv.latencyMs}ms` : 'offline';
+      const clients = sv.online && sv.clients != null ? ` · ${sv.clients} online` : '';
+      const badges =
+        `<span class="b">${esc(sv.source || '')}</span>` +
+        (sv.verified ? '<span class="b ok">verified</span>' : '') +
+        (sv.needsUpdate ? '<span class="b">needs newer app</span>' : '');
+      return `<div class="sp-row ${url === cur ? 'sel' : ''}" data-url="${esc(url)}">
+        <div class="r1"><span class="sp-dot ${sv.online ? 'on' : ''}"></span><span class="nm">${esc(name)}</span>${badges}</div>
+        <div class="r2">${esc(sv.description || url)} · ${lat}${clients}</div>
+      </div>`;
+    })
+    .join('');
+  for (const row of list.querySelectorAll('.sp-row')) {
+    row.onclick = () => {
+      $('in-server').value = row.dataset.url;
+      renderServerPicker(state);
+    };
+  }
+}
+
+// ---------- update prompts ----------
+$('ur-btn').onclick = () => state && state.updateGate && window.pqmsg.openExternal(state.updateGate.downloadUrl);
+$('ub-btn').onclick = () => state && state.updateInfo && window.pqmsg.openExternal(state.updateInfo.downloadUrl);
+$('ub-x').onclick = () => {
+  try { sessionStorage.setItem('ub-dismissed', '1'); } catch {}
+  $('update-banner').hidden = true;
+};
+
+function renderUpdate(s) {
+  const g = s.updateGate;
+  $('update-required').hidden = !g;
+  if (g) {
+    $('ur-text').textContent = `You're running pqmsg ${g.current}. This ${g.source === 'server' ? 'server' : 'network'} requires ${g.required} or newer.`;
+  }
+  let dismissed = false;
+  try { dismissed = sessionStorage.getItem('ub-dismissed') === '1'; } catch {}
+  const showBanner = !g && s.updateInfo && !dismissed;
+  $('update-banner').hidden = !showBanner;
+  if (showBanner) $('ub-text').textContent = `pqmsg ${s.updateInfo.latest} is available (you have ${s.appVersion}).`;
+}
+
 // ---------- new conversation ----------
 $('btn-open').onclick = openConv;
 $('in-to').addEventListener('keydown', (e) => e.key === 'Enter' && openConv());
@@ -109,10 +180,14 @@ window.pqmsg.onEvent((ev) => logLine(fmtEvent(ev)));
 
 function render() {
   if (!state) return;
+  renderUpdate(state);
   const loggedIn = state.enrolled && !state.needsLogin;
   $('login').hidden = loggedIn;
   $('app').hidden = !loggedIn;
-  if (!loggedIn) return;
+  if (!loggedIn) {
+    renderServerPicker(state);
+    return;
+  }
 
   $('hdr-user').textContent = '@' + state.username;
   $('hdr-device').textContent = state.deviceName || '';
@@ -220,7 +295,8 @@ async function refresh() {
   if (r.ok) {
     state = r.data;
     render();
+    if (state.needsLogin || !state.enrolled) window.pqmsg.discoverServers(); // populate the picker
   }
 }
 refresh();
-setInterval(() => state && !state.needsLogin && render(), 1000); // keep "Ns ago" fresh
+setInterval(() => state && render(), 1000); // keep "Ns ago" / update prompts fresh

@@ -35,6 +35,21 @@
       </section>
 
       <section class="card">
+        <h2>public directory listing</h2>
+        <p class="hint">List this server in the registry so clients discover it automatically. Requires the internet tunnel to be on.</p>
+        <label class="fld">name<input id="l-name" placeholder="e.g. Nero's server" maxlength="40" /></label>
+        <label class="fld">description<input id="l-desc" placeholder="short blurb (optional)" maxlength="200" /></label>
+        <label class="fld">registry URL<input id="l-registry" placeholder="https://registry.example.com" /></label>
+        <label class="chk"><input id="l-on" type="checkbox" /> list this server publicly</label>
+        <details class="adv">
+          <summary>force client updates</summary>
+          <label class="fld">minimum client version (hard-block below)<input id="l-min" placeholder="e.g. 0.2.0" /></label>
+          <label class="fld">latest client version (soft nag below)<input id="l-latest" placeholder="e.g. 0.2.0" /></label>
+        </details>
+        <div id="l-status" class="note"></div>
+      </section>
+
+      <section class="card">
         <h2>server</h2>
         <div class="row">
           <button id="btn-start" class="primary">start</button>

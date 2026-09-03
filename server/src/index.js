@@ -19,8 +19,10 @@ const crypto = require('crypto');
 const { config } = require('./config');
 const { Presence } = require('./presence');
 const { createStore } = require('../../shared/store');
+const { RegistryAnnouncer, loadServerIdentity } = require('./registry-client');
 const proto = require('../../shared/protocol');
 const pqc = require('../../shared/crypto');
+const PKG_VERSION = require('../../package.json').version;
 
 const app = express();
 app.use(express.json({ limit: '4mb' }));
@@ -35,6 +37,8 @@ app.use((req, res, next) => {
 const presence = new Presence();
 let store;
 let SECRETS;
+let serverIdentity = null; // Ed25519 registry identity (for /api/serverinfo + announcing)
+let announcer = null;
 
 // --------------------------------------------------------------------------
 // helpers
@@ -330,6 +334,26 @@ app.get('/api/admin/conv/:convId/raw/:msgId', admin, wrap(async (req, res) => {
 }));
 
 app.get('/api/health', (req, res) => res.json({ ok: true, backend: store.kind, time: Date.now() }));
+
+// public, unauthenticated — used by the registry's callback check, by clients to
+// label a server before signing in, and to carry the client-version gate
+app.get('/api/serverinfo', (req, res) =>
+  res.json({
+    name: config.serverName || null,
+    description: config.serverDescription || null,
+    region: config.serverRegion || null,
+    publicId: serverIdentity ? serverIdentity.publicId : null,
+    serverVersion: PKG_VERSION,
+    backend: store ? store.kind : null,
+    clients: presence.list().length,
+    // client update gate — operator sets PQMSG_MIN_CLIENT / PQMSG_LATEST_CLIENT
+    minClient: config.minClient || null,
+    latestClient: config.latestClient || null,
+    downloadUrl: config.clientDownloadUrl,
+    time: Date.now(),
+  })
+);
+
 app.use('/', express.static(path.join(__dirname, '..', 'public')));
 
 // --------------------------------------------------------------------------
@@ -441,6 +465,21 @@ async function startServer(overrides = {}) {
   started = true;
   const url = `http://localhost:${config.port}`;
 
+  // Ed25519 registry identity — always loaded so /api/serverinfo can report publicId
+  try {
+    serverIdentity = loadServerIdentity(config.dataDir);
+  } catch (e) {
+    console.error('registry identity load failed:', e.message);
+  }
+  if (config.announce && config.registryUrl && config.serverName && config.serverPublicUrl) {
+    startAnnouncing({
+      name: config.serverName,
+      description: config.serverDescription,
+      region: config.serverRegion,
+      url: config.serverPublicUrl,
+    });
+  }
+
   if (!config.quiet) {
     console.log('┌───────────────────────────────────────────────');
     console.log('│  pqmsg server');
@@ -463,11 +502,53 @@ async function startServer(overrides = {}) {
     adminToken,
     dataDir: config.dataDir,
     backend: store.kind,
-    close: () => new Promise((r) => server.close(r)),
+    registryIdentity: serverIdentity,
+    getAnnouncer: () => announcer,
+    startAnnouncing,
+    stopAnnouncing,
+    setServerInfo,
+    close: async () => {
+      await stopAnnouncing();
+      await new Promise((r) => server.close(r));
+    },
   };
 }
 
-module.exports = { startServer, app, config };
+/** Begin (or update + resume) announcing this server to the configured registry. */
+function startAnnouncing(info) {
+  const registryUrl = info.registryUrl || config.registryUrl;
+  if (!registryUrl) throw new Error('no registry URL (set PQMSG_REGISTRY_URL)');
+  config.registryUrl = registryUrl;
+  if (!announcer) {
+    announcer = new RegistryAnnouncer({ registryUrl, dataDir: config.dataDir, info });
+  } else {
+    announcer.setInfo(info);
+  }
+  announcer.start();
+  return announcer;
+}
+function stopAnnouncing() {
+  return announcer ? announcer.stop() : Promise.resolve();
+}
+/** Live-update the name/description/URL reported at /api/serverinfo and (if active) re-announced. */
+function setServerInfo(patch = {}) {
+  if (patch.name !== undefined) config.serverName = patch.name;
+  if (patch.description !== undefined) config.serverDescription = patch.description;
+  if (patch.region !== undefined) config.serverRegion = patch.region;
+  if (patch.url !== undefined) config.serverPublicUrl = patch.url;
+  if (patch.minClient !== undefined) config.minClient = patch.minClient;
+  if (patch.latestClient !== undefined) config.latestClient = patch.latestClient;
+  if (announcer) {
+    announcer.setInfo({
+      name: config.serverName,
+      description: config.serverDescription,
+      region: config.serverRegion,
+      url: config.serverPublicUrl,
+    });
+  }
+}
+
+module.exports = { startServer, startAnnouncing, stopAnnouncing, setServerInfo, app, config };
 
 if (require.main === module) {
   startServer().catch((e) => {

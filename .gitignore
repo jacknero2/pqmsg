@@ -6,3 +6,4 @@ dist/
 .DS_Store
 resources/cloudflared
 resources/cloudflared.exe
+registry-data/

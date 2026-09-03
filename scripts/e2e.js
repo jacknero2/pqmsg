@@ -23,6 +23,9 @@ process.env.PQMSG_PORT = String(PORT);
 process.env.PQMSG_HOST = '127.0.0.1';
 process.env.STORE_BACKEND = 'local';
 process.env.PQMSG_DATA_DIR = path.join(TMP, 'server');
+// keep the client's discovery/version checks off the network during the test
+process.env.PQMSG_SEED_URL = 'http://127.0.0.1:1/x';
+process.env.PQMSG_VERSION_URL = 'http://127.0.0.1:1/x';
 process.env.PQMSG_ADMIN_TOKEN = 'e2e-admin';
 
 const pqc = require('../shared/crypto');

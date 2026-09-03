@@ -27,6 +27,19 @@ const config = {
   // disables the "loopback requests skip the admin token" bypass, which is unsafe
   // behind a proxy/tunnel because every request then originates from 127.0.0.1.
   public: /^(1|true|yes)$/i.test(process.env.PQMSG_PUBLIC || ''),
+
+  // --- public directory listing (see registry/) ---
+  serverName: process.env.PQMSG_SERVER_NAME || '',
+  serverDescription: process.env.PQMSG_SERVER_DESCRIPTION || '',
+  serverRegion: process.env.PQMSG_SERVER_REGION || '',
+  serverPublicUrl: process.env.PQMSG_PUBLIC_URL || '', // the https URL clients actually use (tunnel / domain)
+  registryUrl: process.env.PQMSG_REGISTRY_URL || '',
+  announce: /^(1|true|yes)$/i.test(process.env.PQMSG_ANNOUNCE || ''),
+
+  // --- client version gate: served at /api/serverinfo, enforced by clients ---
+  minClient: process.env.PQMSG_MIN_CLIENT || '', // clients below this are hard-blocked from this server
+  latestClient: process.env.PQMSG_LATEST_CLIENT || '', // newest known; clients below get a soft "update available"
+  clientDownloadUrl: process.env.PQMSG_DOWNLOAD_URL || 'https://jacknero2.github.io/pqmsg/',
 };
 
 module.exports = { config };

@@ -1,0 +1,5 @@
+{
+  "_comment": "Seed list read by every client on startup. 'registry' = URL of a running pqmsg registry service (see registry/) for live auto-discovery; leave '' if you don't run one. 'servers' = entries always shown in the picker: { name, url, description }. Clients merge these with live registry results and any URLs the user adds themselves.",
+  "registry": "",
+  "servers": []
+}

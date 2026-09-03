@@ -48,6 +48,7 @@ jobs:
           curl -fL -o resources/cloudflared.exe https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-windows-amd64.exe
 
       - run: npm run e2e
+      - run: npm run e2e:registry
 
       # no GH_TOKEN here on purpose — electron-builder must NOT auto-publish;
       # the single "Publish to GitHub Release" step below is the only uploader

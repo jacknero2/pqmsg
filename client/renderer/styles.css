@@ -145,6 +145,39 @@ main { flex: 1; display: flex; min-height: 0; }
 #composer { display: flex; gap: 8px; padding: 10px 14px; border-top: 1px solid var(--line); background: var(--panel2); }
 #composer input { flex: 1; }
 
+/* server picker (login screen) */
+#server-picker { margin-bottom: 12px; }
+.sp-head { display: flex; justify-content: space-between; align-items: center; font-size: 10px; text-transform: uppercase; letter-spacing: 1px; color: var(--dim); margin-bottom: 5px; }
+.sp-head .mini { background: transparent; border: 1px solid var(--line); color: var(--dim); padding: 2px 7px; font-size: 10px; }
+.sp-list { max-height: 168px; overflow-y: auto; border: 1px solid var(--line); border-radius: 7px; background: var(--panel2); }
+.sp-list > .dim { display: block; padding: 10px; font-size: 11px; }
+.sp-row { padding: 8px 10px; border-bottom: 1px solid var(--line); cursor: pointer; }
+.sp-row:last-child { border-bottom: 0; }
+.sp-row:hover { background: #131c25; }
+.sp-row.sel { background: #16232d; border-left: 2px solid var(--cyan); }
+.sp-row .r1 { display: flex; align-items: center; gap: 7px; }
+.sp-row .nm { color: var(--ink); }
+.sp-row .r2 { color: var(--dim); font-size: 10px; margin-top: 2px; }
+.sp-row .b { display: inline-block; border: 1px solid var(--line); border-radius: 8px; padding: 0 5px; font-size: 9px; color: var(--dim); margin-left: 4px; }
+.sp-row .b.ok { color: var(--gold); border-color: var(--gold); }
+.sp-dot { width: 7px; height: 7px; border-radius: 50%; background: var(--lred); flex: 0 0 auto; }
+.sp-dot.on { background: var(--cyan); box-shadow: 0 0 6px var(--cyan); }
+.sp-add { display: flex; gap: 6px; margin-top: 6px; }
+.sp-add input { flex: 1; font-size: 11px; padding: 5px 8px; }
+.sp-add .mini { padding: 5px 10px; font-size: 11px; }
+
+/* update prompts */
+#update-required { z-index: 100; }
+#update-banner {
+  position: fixed; top: 0; left: 0; right: 0; z-index: 40;
+  display: flex; align-items: center; gap: 10px;
+  background: #2c2410; border-bottom: 1px solid var(--gold); color: #ffeebb;
+  padding: 6px 12px; font-size: 11px;
+}
+#update-banner .mini { background: #10343a; border: 1px solid #1f6f6a; color: var(--cyan); padding: 2px 9px; font-size: 10px; }
+#update-banner #ub-x { background: transparent; border-color: var(--line); color: var(--dim); }
+#update-banner[hidden] { display: none; }
+
 #console {
   height: 92px; overflow-y: auto; border-top: 1px solid var(--line);
   background: #070a0e; padding: 6px 12px; font-size: 10.5px; color: #5f7688;

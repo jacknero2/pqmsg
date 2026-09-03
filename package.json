@@ -14,8 +14,10 @@
   "scripts": {
     "server": "node server/src/index.js",
     "server:app": "electron server/app/main.js",
+    "registry": "node registry/index.js",
     "client": "electron .",
     "e2e": "node scripts/e2e.js",
+    "e2e:registry": "node scripts/e2e-registry.js",
     "icon": "node scripts/make-icon.js",
     "dist:client": "electron-builder --config build/client.yml --publish never",
     "dist:server": "electron-builder --config build/server.yml --publish never",

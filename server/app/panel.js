@@ -17,6 +17,45 @@ $('tunnel-toggle').onclick = () => {
   else window.srv.tunnelStart();
 };
 
+// ---- public listing fields ----
+const LFIELDS = { 'l-name': 'name', 'l-desc': 'description', 'l-registry': 'registryUrl', 'l-min': 'minClient', 'l-latest': 'latestClient' };
+for (const [id, key] of Object.entries(LFIELDS)) {
+  $(id).addEventListener('change', () => window.srv.setListing({ [key]: $(id).value.trim() }));
+}
+$('l-on').addEventListener('change', () => window.srv.setListing({ listPublicly: $('l-on').checked }));
+
+function renderListing(state) {
+  const L = state.listing || {};
+  const setIfIdle = (id, v) => {
+    if (document.activeElement !== $(id)) $(id).value = v || '';
+  };
+  setIfIdle('l-name', L.name);
+  setIfIdle('l-desc', L.description);
+  setIfIdle('l-registry', L.registryUrl);
+  setIfIdle('l-min', L.minClient);
+  setIfIdle('l-latest', L.latestClient);
+  if (document.activeElement !== $('l-on')) $('l-on').checked = !!L.listPublicly;
+
+  const a = L.announce;
+  const st = $('l-status');
+  if (!L.listPublicly) {
+    st.className = 'note';
+    st.textContent = L.publicId ? `id ${L.publicId.slice(0, 16)}…  ·  not listed` : 'not listed';
+  } else if (!state.tunnel.url) {
+    st.className = 'note';
+    st.textContent = 'turn on the internet tunnel to get listed';
+  } else if (a && a.phase === 'listed') {
+    st.className = 'note ok';
+    st.textContent = `listed as “${a.listedAs}”${a.verified ? ' · verified ✓' : ' · verifying…'}  ·  id ${(L.publicId || '').slice(0, 16)}…`;
+  } else if (a && a.phase === 'error') {
+    st.className = 'note err';
+    st.textContent = 'registry error: ' + a.error;
+  } else {
+    st.className = 'note';
+    st.textContent = a && a.error ? a.error : 'announcing…';
+  }
+}
+
 window.srv.onFatal((m) => {
   $('fatal').hidden = false;
   $('fatal').textContent = 'server error: ' + m;
@@ -30,6 +69,7 @@ function render(state) {
   const running = state.running;
   $('dot').className = 'dot' + (running ? ' on' : '');
   $('state-label').textContent = running ? `running · :${state.port}` : 'stopped';
+  renderListing(state);
 
   // addresses
   const t = state.tunnel;

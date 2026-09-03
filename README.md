@@ -187,6 +187,45 @@ commit. Canonical ordering == commit order. Caveats: the authenticated API is
 small while testing; concurrent writers occasionally 409 and are retried. Server
 secrets are kept in `~/.pqmsg-server-secret.json`, never committed.
 
+## Server registry & discovery
+
+Clients don't need to be handed a URL — they show a **scrollable server picker**
+on the login screen, populated from three merged sources:
+
+- **seed** — `docs/servers.json` on GitHub Pages (always reachable, curated by PR)
+- **registry** — a live `GET {registry}/servers` from the standalone service in
+  `registry/` (auto-announced, has liveness; dead servers drop off in ~5 min)
+- **pinned** — URLs the user adds by hand, stored locally
+
+**Running the registry** (deploy like the headless server — a small cloud box):
+
+```bash
+npm run registry        # listens on :8788
+```
+
+Put its public URL in `docs/servers.json` (`"registry": "https://…"`).
+
+**A server lists itself** by setting `PQMSG_SERVER_NAME`, `PQMSG_PUBLIC_URL`
+(the https URL clients use) and `PQMSG_REGISTRY_URL`, plus `PQMSG_ANNOUNCE=1` —
+or, in the **pqmsg Server** app, filling the "public directory listing" card and
+ticking the box. The server signs each announcement with a per-server Ed25519
+key (`registry-identity.json`); the registry does first-come **name ownership**
+(TOFU) and fetches `{url}/api/serverinfo` to confirm the key before listing it.
+
+## Forcing client updates
+
+Every client checks two version gates on startup (and every 6 h):
+
+- **global** — `docs/version.json` on GitHub Pages: raise `minSupported` to
+  hard-block every client below it with an unskippable "update required" screen;
+  raise `latest` for a dismissible "update available" banner.
+- **per-server** — a server sets `PQMSG_MIN_CLIENT` / `PQMSG_LATEST_CLIENT` (or
+  the Server app's "force client updates" fields); clients below `minClient` are
+  refused at login to that server.
+
+Both point users at the download page. Nothing auto-installs — the gate just
+blocks use until they update, which fits the unsigned-distribution model.
+
 ## Deployment
 
 See [DEPLOY.md](DEPLOY.md) for exposing the server publicly — Cloudflare Tunnel
