@@ -25,7 +25,8 @@ files:
   - "!server-data/**"
 npmRebuild: false
 electronLanguages: ["en"]
-artifactName: ${productName}-${version}-${os}-${arch}.${ext}
+artifactName: ${name}-${version}-${os}-${arch}.${ext}
+publish: null
 
 mac:
   category: public.app-category.social-networking
@@ -47,7 +48,7 @@ nsis:
   oneClick: false
   perMachine: false
   allowToChangeInstallationDirectory: true
-  artifactName: ${productName}-${version}-setup.${ext}
+  artifactName: ${name}-${version}-setup.${ext}
 
 linux:
   icon: build/icon.png

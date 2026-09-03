@@ -49,14 +49,12 @@ jobs:
 
       - run: npm run e2e
 
+      # no GH_TOKEN here on purpose — electron-builder must NOT auto-publish;
+      # the single "Publish to GitHub Release" step below is the only uploader
       - name: Build client
         run: npm run dist:client
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       - name: Build server app
         run: npm run dist:server
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Collect installers
         shell: bash

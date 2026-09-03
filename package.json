@@ -17,8 +17,8 @@
     "client": "electron .",
     "e2e": "node scripts/e2e.js",
     "icon": "node scripts/make-icon.js",
-    "dist:client": "electron-builder --config build/client.yml",
-    "dist:server": "electron-builder --config build/server.yml",
+    "dist:client": "electron-builder --config build/client.yml --publish never",
+    "dist:server": "electron-builder --config build/server.yml --publish never",
     "dist": "npm run dist:client && npm run dist:server"
   },
   "dependencies": {
