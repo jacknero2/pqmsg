@@ -13,6 +13,7 @@ extraMetadata:
 files:
   - "server/**/*"
   - "shared/**/*"
+  - "registry/**/*"
   - "package.json"
   - "!**/*.md"
   - "!client/**"

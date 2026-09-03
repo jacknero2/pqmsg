@@ -563,16 +563,24 @@ let masterState = null; // Master instance
 let registryMounted = null; // { app, entries, owners } from buildRegistryApp
 
 function mountRegistry() {
-  if (registryMounted) return;
-  const { buildRegistryApp } = require('../../registry');
-  registryMounted = buildRegistryApp({
-    dataDir: path.join(config.dataDir, 'registry'),
-    allowInsecure: config.fedAllowInsecure,
-    trustAllUrls: config.fedTrustAll,
-    quiet: true,
-  });
-  app.use('/registry', registryMounted.app);
-  presence.log('registry-mounted', { at: '/registry' });
+  if (registryMounted) return true;
+  try {
+    const { buildRegistryApp } = require('../../registry');
+    registryMounted = buildRegistryApp({
+      dataDir: path.join(config.dataDir, 'registry'),
+      allowInsecure: config.fedAllowInsecure,
+      trustAllUrls: config.fedTrustAll,
+      quiet: true,
+    });
+    app.use('/registry', registryMounted.app);
+    presence.log('registry-mounted', { at: '/registry' });
+    return true;
+  } catch (e) {
+    // never let a registry problem take down the whole server
+    console.error('registry mount failed:', e.message);
+    presence.log('registry-mount-failed', { error: e.message });
+    return false;
+  }
 }
 
 const requireMaster = (req, res, next) => {
@@ -619,11 +627,16 @@ app.post(
       const status = r.error === 'bad_code' ? 401 : r.error === 'too_many_attempts' ? 429 : 400;
       throw Object.assign(new Error(r.error), { status });
     }
-    masterState.setRegistryEnabled(true);
-    mountRegistry();
+    const mounted = mountRegistry();
+    masterState.setRegistryEnabled(mounted);
     const masterToken = proto.issueToken(SECRETS.masterSecret, { t: 'master' }, 24 * 3600 * 1000);
-    presence.log('master-login', {});
-    res.json({ masterToken, registryEnabled: true, registryUrl: (config.serverPublicUrl || '') + '/registry' });
+    presence.log('master-login', { registryMounted: mounted });
+    res.json({
+      masterToken,
+      registryEnabled: mounted,
+      error: mounted ? undefined : 'registry module unavailable in this build',
+      registryUrl: (config.serverPublicUrl || '') + '/registry',
+    });
   })
 );
 
