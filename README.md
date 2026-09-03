@@ -160,6 +160,12 @@ commit. Canonical ordering == commit order. Caveats: the authenticated API is
 small while testing; concurrent writers occasionally 409 and are retried. Server
 secrets are kept in `~/.pqmsg-server-secret.json`, never committed.
 
+## Deployment
+
+See [DEPLOY.md](DEPLOY.md) for exposing the server publicly — Cloudflare Tunnel
+(server on your laptop) or a small always-on cloud VM with Caddy for TLS. Set
+`PQMSG_PUBLIC=1` for any internet-facing run.
+
 ## Security notes / limitations (prototype)
 
 - The local keystore (`identity.json`) is plaintext on disk. A real build would
