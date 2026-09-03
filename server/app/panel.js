@@ -26,14 +26,13 @@ $('l-on').addEventListener('change', () => window.srv.setListing({ listPublicly:
 
 function renderListing(state) {
   const L = state.listing || {};
-  const setIfIdle = (id, v) => {
-    if (document.activeElement !== $(id)) $(id).value = v || '';
-  };
-  setIfIdle('l-name', L.name);
-  setIfIdle('l-desc', L.description);
-  setIfIdle('l-registry', L.registryUrl);
-  setIfIdle('l-min', L.minClient);
-  setIfIdle('l-latest', L.latestClient);
+  // only pre-fill blank fields — never clobber what the operator is typing
+  const fill = (id, v) => { const el = $(id); if (v && !el.value && document.activeElement !== el) el.value = v; };
+  fill('l-name', L.name);
+  fill('l-desc', L.description);
+  fill('l-registry', L.registryUrl);
+  fill('l-min', L.minClient);
+  fill('l-latest', L.latestClient);
   if (document.activeElement !== $('l-on')) $('l-on').checked = !!L.listPublicly;
 
   const a = L.announce;
@@ -79,8 +78,9 @@ function renderSmtp(state) {
   $('mail-mode').textContent = mode;
   $('mail-mode').className = 'pill' + (mode === 'smtp' ? ' ok' : '');
   const s = state.smtp || {};
-  const setIf = (id, v) => { if (document.activeElement !== $(id)) $(id).value = v || ''; };
-  setIf('s-host', s.host); setIf('s-port', s.port); setIf('s-user', s.user); setIf('s-from', s.from);
+  // only pre-fill blank fields — never overwrite what the user is typing
+  const fill = (id, v) => { const el = $(id); if (v && !el.value && document.activeElement !== el) el.value = v; };
+  fill('s-host', s.host); fill('s-port', s.port); fill('s-user', s.user); fill('s-from', s.from);
 }
 
 // ---- master registry ----

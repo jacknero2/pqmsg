@@ -106,8 +106,13 @@ function snapshot() {
     },
   };
 }
+let _pushTimer = null;
 function pushState() {
-  if (win && !win.isDestroyed()) win.webContents.send('state', snapshot());
+  if (_pushTimer) return; // coalesce bursts (cloudflared log spam, presence churn)
+  _pushTimer = setTimeout(() => {
+    _pushTimer = null;
+    if (win && !win.isDestroyed()) win.webContents.send('state', snapshot());
+  }, 200);
 }
 
 async function startBackend() {
@@ -181,7 +186,7 @@ if (!app.requestSingleInstanceLock()) {
       reconcileAnnounce();
       pushState();
     });
-    tunnel.on('log', () => pushState());
+    // tunnel 'log' events are frequent and don't change panel state — ignore
     createWindow();
     await startBackend().catch((e) => {
       if (win) win.webContents.send('fatal', e.message);
