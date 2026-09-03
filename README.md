@@ -3,7 +3,19 @@
 An iMessage-style encrypted messaging app: automatic device enrollment, an
 identity directory service (IDS) of per-device public keys, conversations stored
 as folders of ciphertext, delivery receipts, and an eventually-consistent
-ordering model. Ships with an Electron client and a read-only server console.
+ordering model.
+
+## Two apps
+
+| | who runs it | what it does |
+|---|---|---|
+| **pqmsg** (client) | every user | sign up, enroll a device, chat |
+| **pqmsg Server** | one host | runs the server on their computer; one click opens a public `https://…trycloudflare.com` address that clients anywhere enter — no router setup, works on restrictive (university / corporate) networks |
+
+Download page (installers, no build tools needed): **https://jacknero2.github.io/pqmsg/**
+— built by CI on every `v*` tag, published to [Releases](https://github.com/jacknero2/pqmsg/releases).
+The builds are unsigned; your OS asks you to confirm the first launch (macOS:
+right-click → Open; Windows: More info → Run anyway).
 
 ## Cryptography
 
@@ -94,14 +106,29 @@ pqmsg/
 - Serves the **dashboard** — folders, ciphertext previews, raw envelopes,
   live connection list, event ticker. It **cannot read message bodies**.
 
-## Running it
+## Running from source
+
+(End users don't need this — they use the installers above. This is for
+development.)
 
 ```bash
 cd pqmsg
 npm install
 ```
 
-### 1. Server
+Build the desktop installers for your current OS:
+
+```bash
+npm run dist          # -> dist/client/*  and  dist/server/*
+```
+
+### Server app (GUI)
+
+```bash
+npm run server:app    # Electron control panel: start/stop, tunnel toggle, clients
+```
+
+### 1. Server (headless)
 
 ```bash
 npm run server

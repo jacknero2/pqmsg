@@ -2,7 +2,22 @@
 
 Clients talk to **one server**; there is no client-to-client path. To let someone
 on another network (incl. a restrictive university network) join, that server
-needs a public `https://` URL. Two ways.
+needs a public `https://` URL.
+
+---
+
+## 0. The pqmsg Server app (easiest — no terminal)
+
+Install **pqmsg Server** from https://jacknero2.github.io/pqmsg/, open it, click
+**“make reachable from the internet.”** It runs the server and a bundled
+Cloudflare tunnel, then shows a `https://…trycloudflare.com` address. Give that
+address to people; they paste it into the `server` field of their pqmsg client.
+Data lives in `~/Library/Application Support/pqmsg Server/server-data` (macOS) /
+`%APPDATA%\pqmsg Server\server-data` (Windows). The tunnel URL changes each time
+you restart the app — for a fixed address use a named tunnel or a cloud host
+(below).
+
+The rest of this file is the manual / production equivalents.
 
 ---
 

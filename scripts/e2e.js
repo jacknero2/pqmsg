@@ -84,7 +84,8 @@ async function waitHealth() {
   }
 
   console.log('\n── server + two client engines ───────────────────');
-  require('../server/src/index.js');
+  const { startServer } = require('../server/src/index.js');
+  await startServer({ quiet: false });
   await waitHealth();
   ok(`server up on :${PORT} (data ${process.env.PQMSG_DATA_DIR})`);
 

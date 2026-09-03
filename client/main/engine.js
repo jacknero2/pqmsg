@@ -25,9 +25,9 @@ const norm = (u) => String(u || '').trim().toLowerCase();
 const TRAILING_WINDOW = 30; // messages re-checked each cycle for order + delivery
 
 class Engine extends EventEmitter {
-  constructor(profile) {
+  constructor(profile, baseDir) {
     super();
-    this.store = new ClientStore(profile);
+    this.store = new ClientStore(profile, baseDir);
     this.identity = this.store.loadIdentity();
     this.api = null;
     this.ws = null;

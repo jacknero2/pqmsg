@@ -1,0 +1,65 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self'; style-src 'self';" />
+    <title>pqmsg Server</title>
+    <link rel="stylesheet" href="panel.css" />
+  </head>
+  <body>
+    <header>
+      <div class="brand">pqmsg <span class="chev">▷</span> server</div>
+      <div class="state"><span id="dot" class="dot"></span><span id="state-label">starting…</span></div>
+    </header>
+
+    <main>
+      <section class="card">
+        <h2>share this address</h2>
+        <p class="hint">People enter this in their pqmsg client to reach your server.</p>
+
+        <div class="addr big">
+          <span class="lbl">Internet</span>
+          <code id="pub-url">— tunnel off —</code>
+          <button id="pub-copy" class="mini" hidden>copy</button>
+        </div>
+        <div class="row">
+          <button id="tunnel-toggle" class="primary">make reachable from the internet</button>
+          <span id="tunnel-note" class="note"></span>
+        </div>
+
+        <div class="addr">
+          <span class="lbl">Same Wi‑Fi</span>
+          <code id="lan-url">—</code>
+          <button id="lan-copy" class="mini" hidden>copy</button>
+        </div>
+      </section>
+
+      <section class="card">
+        <h2>server</h2>
+        <div class="row">
+          <button id="btn-start" class="primary">start</button>
+          <button id="btn-stop" class="ghost">stop</button>
+          <button id="btn-dash" class="ghost">open dashboard</button>
+          <button id="btn-data" class="ghost">data folder</button>
+        </div>
+        <div class="kv"><span>listening</span><code id="k-port"></code></div>
+        <div class="kv"><span>storage</span><code id="k-backend"></code></div>
+        <div class="kv"><span>admin token</span><code id="k-admin"></code><button id="admin-copy" class="mini">copy</button></div>
+        <div class="kv"><span>data dir</span><code id="k-data"></code></div>
+      </section>
+
+      <section class="card grow">
+        <h2>connected clients <span id="peer-count" class="pill">0</span></h2>
+        <div id="peers" class="scroll"></div>
+      </section>
+
+      <section class="card grow">
+        <h2>activity</h2>
+        <div id="events" class="scroll mono"></div>
+      </section>
+    </main>
+
+    <p id="fatal" class="fatal" hidden></p>
+    <script src="panel.js"></script>
+  </body>
+</html>

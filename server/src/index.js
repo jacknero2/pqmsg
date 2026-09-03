@@ -412,23 +412,66 @@ setInterval(() => {
 // --------------------------------------------------------------------------
 // boot
 // --------------------------------------------------------------------------
-(async () => {
+let started = false;
+
+/**
+ * Start the pqmsg server. Safe to call once per process.
+ * @param {object} overrides  merged into config before boot: { port, host,
+ *        dataDir, backend, adminToken, public, quiet }
+ * @returns {Promise<{server,presence,port,host,url,adminToken,dataDir,backend,close}>}
+ */
+async function startServer(overrides = {}) {
+  if (started) {
+    return { server, presence, port: config.port, host: config.host, url: `http://localhost:${config.port}` };
+  }
+  Object.assign(config, overrides);
   store = createStore(config);
   await store.init();
   SECRETS = await store.getServerSecrets();
-  const shownAdmin = config.adminToken || SECRETS.adminToken;
+  const adminToken = config.adminToken || SECRETS.adminToken;
 
-  server.listen(config.port, config.host, () => {
-    const url = `http://localhost:${config.port}`;
+  await new Promise((resolve, reject) => {
+    const onErr = (e) => reject(e);
+    server.once('error', onErr);
+    server.listen(config.port, config.host, () => {
+      server.off('error', onErr);
+      resolve();
+    });
+  });
+  started = true;
+  const url = `http://localhost:${config.port}`;
+
+  if (!config.quiet) {
     console.log('┌───────────────────────────────────────────────');
     console.log('│  pqmsg server');
     console.log(`│  backend    : ${store.kind}${store.kind === 'github' ? ' (' + config.githubRepo + ')' : ' (' + config.dataDir + ')'}`);
     console.log(`│  listening  : ${config.host}:${config.port}`);
     console.log(`│  mode       : ${config.public ? 'PUBLIC (loopback admin bypass OFF)' : 'local (loopback may skip admin token)'}`);
-    console.log(`│  dashboard  : ${url}/?admin=${shownAdmin}`);
-    console.log(`│  admin token: ${shownAdmin}${config.adminToken ? ' (from PQMSG_ADMIN_TOKEN)' : ' (auto — set PQMSG_ADMIN_TOKEN to pin it)'}`);
+    console.log(`│  dashboard  : ${url}/?admin=${adminToken}`);
+    console.log(`│  admin token: ${adminToken}${config.adminToken ? ' (pinned)' : ' (auto — set PQMSG_ADMIN_TOKEN to pin it)'}`);
     if (config.public && !config.adminToken)
       console.log('│  ⚠ PUBLIC with an auto admin token — set PQMSG_ADMIN_TOKEN so it survives restarts');
     console.log('└───────────────────────────────────────────────');
+  }
+
+  return {
+    server,
+    presence,
+    port: config.port,
+    host: config.host,
+    url,
+    adminToken,
+    dataDir: config.dataDir,
+    backend: store.kind,
+    close: () => new Promise((r) => server.close(r)),
+  };
+}
+
+module.exports = { startServer, app, config };
+
+if (require.main === module) {
+  startServer().catch((e) => {
+    console.error('pqmsg server failed to start:', e.message);
+    process.exit(1);
   });
-})();
+}

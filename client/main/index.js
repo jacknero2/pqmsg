@@ -7,6 +7,19 @@ const PROFILE = process.env.PQMSG_PROFILE || 'default';
 let win;
 let engine;
 
+// one running client per machine, except in dev where PQMSG_PROFILE lets you
+// run several (alice / bob) side by side
+if (app.isPackaged && !app.requestSingleInstanceLock()) {
+  app.quit();
+} else {
+  app.on('second-instance', () => {
+    if (win) {
+      if (win.isMinimized()) win.restore();
+      win.focus();
+    }
+  });
+}
+
 function createWindow() {
   win = new BrowserWindow({
     width: 1120,
@@ -38,7 +51,7 @@ function createWindow() {
 }
 
 app.whenReady().then(async () => {
-  engine = new Engine(PROFILE);
+  engine = new Engine(PROFILE, app.getPath('userData'));
   await engine.resume();
   createWindow();
 

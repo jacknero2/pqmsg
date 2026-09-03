@@ -1,0 +1,69 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>pqmsg — post-quantum messenger</title>
+    <meta name="description" content="Download pqmsg: a post-quantum end-to-end encrypted messenger. ML-KEM-1024 + ML-DSA-87 + AES-256-GCM." />
+    <link rel="stylesheet" href="style.css" />
+  </head>
+  <body>
+    <main>
+      <header>
+        <h1>pqmsg<span class="cursor">_</span></h1>
+        <p class="tag">post-quantum end-to-end encrypted messaging<br />
+          <span class="dim">ML-KEM-1024 · ML-DSA-87 · AES-256-GCM · your keys never leave your device</span>
+        </p>
+      </header>
+
+      <section class="dl">
+        <h2>1 · get the client</h2>
+        <p class="dim">Everyone who wants to chat installs this. Free, unsigned — your OS will ask you to confirm the first launch (steps below).</p>
+        <div id="client-buttons" class="buttons"><span class="dim">loading latest release…</span></div>
+        <p id="client-os-hint" class="oshint"></p>
+      </section>
+
+      <section class="dl">
+        <h2>2 · one person runs the server</h2>
+        <p class="dim">Only the host installs this. It runs the pqmsg server on their computer and, with one click, exposes a public
+          <code>https://…trycloudflare.com</code> address that clients anywhere enter — no router setup, works on university / corporate Wi‑Fi.</p>
+        <div id="server-buttons" class="buttons"><span class="dim">loading…</span></div>
+      </section>
+
+      <section>
+        <h2>opening an unsigned build</h2>
+        <div class="cols">
+          <div>
+            <h3>macOS</h3>
+            <p>Right‑click the app in <em>Applications</em> → <strong>Open</strong> → <strong>Open</strong>. If it says “damaged”, run once in Terminal:</p>
+            <pre>xattr -cr "/Applications/pqmsg.app"</pre>
+          </div>
+          <div>
+            <h3>Windows</h3>
+            <p>SmartScreen shows “Windows protected your PC” → <strong>More info</strong> → <strong>Run anyway</strong>.</p>
+          </div>
+          <div>
+            <h3>Linux</h3>
+            <p><code>.AppImage</code>: <code>chmod +x</code> then run. <code>.deb</code>: <code>sudo apt install ./pqmsg*.deb</code>.</p>
+          </div>
+        </div>
+      </section>
+
+      <section>
+        <h2>how it works</h2>
+        <ol class="how">
+          <li>On first login the client generates an <strong>ML-KEM-1024</strong> + <strong>ML-DSA-87</strong> keypair locally. The private half stays on your machine.</li>
+          <li>Each message gets a random AES-256-GCM key, wrapped to every recipient device with ML-KEM and signed with ML-DSA.</li>
+          <li>The server only ever stores and relays ciphertext — it can list conversations and see who is online, but not read anything.</li>
+          <li>A background sync reconciles message order across devices (eventually consistent); delivered messages turn gold, undelivered stay red.</li>
+        </ol>
+      </section>
+
+      <footer>
+        <a id="repo-link" href="https://github.com/jacknero2/pqmsg">source on GitHub</a>
+        <span class="dim" id="version-line"></span>
+      </footer>
+    </main>
+    <script src="app.js"></script>
+  </body>
+</html>

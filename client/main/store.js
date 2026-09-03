@@ -18,11 +18,12 @@ const os = require('os');
 const crypto = require('crypto');
 
 class ClientStore {
-  constructor(profile) {
+  constructor(profile, baseDir) {
     this.profile = profile || process.env.PQMSG_PROFILE || 'default';
-    this.dir = process.env.PQMSG_DATA_DIR
-      ? path.join(process.env.PQMSG_DATA_DIR, this.profile)
-      : path.join(os.homedir(), '.pqmsg', this.profile);
+    // precedence: PQMSG_DATA_DIR env (dev / multi-profile) > caller baseDir
+    // (Electron userData in a packaged app) > ~/.pqmsg
+    const root = process.env.PQMSG_DATA_DIR || baseDir || path.join(os.homedir(), '.pqmsg');
+    this.dir = path.join(root, this.profile);
     this.convDir = path.join(this.dir, 'conversations');
     fs.mkdirSync(this.convDir, { recursive: true });
   }

@@ -1,5 +1,8 @@
 node_modules/
 server-data/
+dist/
 *.log
 .env
 .DS_Store
+resources/cloudflared
+resources/cloudflared.exe

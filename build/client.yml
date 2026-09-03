@@ -1,0 +1,56 @@
+# electron-builder config — pqmsg CLIENT app
+# build:  npm run dist:client   (builds for the current OS)
+appId: com.jacknero.pqmsg
+productName: pqmsg
+copyright: © 2026 jacknero2
+directories:
+  output: dist/client
+  buildResources: build
+extraMetadata:
+  main: client/main/index.js
+  name: pqmsg
+  productName: pqmsg
+files:
+  - "client/**/*"
+  - "shared/**/*"
+  - "package.json"
+  - "!**/*.md"
+  - "!server/**"
+  - "!build/**"
+  - "!dist/**"
+  - "!docs/**"
+  - "!scripts/**"
+  - "!resources/**"
+  - "!.github/**"
+  - "!server-data/**"
+npmRebuild: false
+electronLanguages: ["en"]
+artifactName: ${productName}-${version}-${os}-${arch}.${ext}
+
+mac:
+  category: public.app-category.social-networking
+  icon: build/icon.png
+  identity: null            # unsigned — users right-click → Open (or: xattr -cr the app)
+  gatekeeperAssess: false
+  target:
+    - target: dmg
+      arch: [arm64, x64]
+dmg:
+  writeUpdateInfo: false
+
+win:
+  icon: build/icon.png
+  target:
+    - target: nsis
+      arch: [x64]
+nsis:
+  oneClick: false
+  perMachine: false
+  allowToChangeInstallationDirectory: true
+  artifactName: ${productName}-${version}-setup.${ext}
+
+linux:
+  icon: build/icon.png
+  category: Network
+  maintainer: jacknero2
+  target: [AppImage, deb]
