@@ -62,8 +62,9 @@ jobs:
         shell: bash
         run: |
           mkdir -p out
-          find dist -maxdepth 3 -type f \
-            \( -name '*.dmg' -o -name '*.exe' -o -name '*.AppImage' -o -name '*.deb' \) \
+          # depth 2 keeps dist/<app>/<installer> but skips dist/<app>/*-unpacked/*.exe
+          find dist -mindepth 2 -maxdepth 2 -type f \
+            \( -name '*.dmg' -o -name '*-setup.exe' -o -name '*.AppImage' -o -name '*.deb' \) \
             -exec cp {} out/ \;
           ls -la out
 
