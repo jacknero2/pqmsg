@@ -22,7 +22,11 @@ const config = {
   githubToken: process.env.GITHUB_TOKEN || '',
   githubRepo: process.env.GITHUB_REPO || '',
   githubBranch: process.env.GITHUB_BRANCH || 'main',
-  adminToken: process.env.PQMSG_ADMIN_TOKEN || '', // empty => loopback-only admin
+  adminToken: process.env.PQMSG_ADMIN_TOKEN || '', // extra admin token (an auto one always exists too)
+  // set PQMSG_PUBLIC=1 for any internet-facing deployment (tunnel, cloud): it
+  // disables the "loopback requests skip the admin token" bypass, which is unsafe
+  // behind a proxy/tunnel because every request then originates from 127.0.0.1.
+  public: /^(1|true|yes)$/i.test(process.env.PQMSG_PUBLIC || ''),
 };
 
 module.exports = { config };

@@ -255,15 +255,17 @@ class GitHubStore {
       return m;
     });
   }
-  async listConversations() {
+  async getConversationMeta(convId) {
+    return this._getJson(`${this._cdir(convId)}/meta.json`);
+  }
+  async listConversations({ counts = false } = {}) {
     const dirs = await this._listDir('conversations');
     const out = [];
     for (const d of dirs) {
       if (d.type !== 'dir') continue;
       const meta = await this._getJson(`conversations/${d.name}/meta.json`);
       if (!meta) continue;
-      const files = await this._messageFiles(d.name);
-      out.push({ ...meta, messageCount: files.length });
+      out.push(counts ? { ...meta, messageCount: (await this._messageFiles(d.name)).length } : meta);
     }
     return out.sort((a, b) => a.createdAt - b.createdAt);
   }
@@ -274,7 +276,7 @@ class GitHubStore {
   }
   async stats() {
     const accounts = await this.listAccounts();
-    const convs = await this.listConversations();
+    const convs = await this.listConversations({ counts: true });
     return {
       backend: 'github',
       repo: `${this.owner}/${this.repo}`,

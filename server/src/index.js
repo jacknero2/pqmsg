@@ -51,14 +51,17 @@ function isLoopback(req) {
   const ip = req.socket.remoteAddress || '';
   return ip === '127.0.0.1' || ip === '::1' || ip === '::ffff:127.0.0.1';
 }
+// effective admin token: the env one if given, else the auto one in server secrets
+const adminTokenValue = () => config.adminToken || (SECRETS && SECRETS.adminToken) || '';
+function adminOk(given, req) {
+  if (given && given === adminTokenValue()) return true;
+  // loopback bypass — UNSAFE behind a proxy/tunnel (every req looks like 127.0.0.1),
+  // so it is disabled when PQMSG_PUBLIC is set.
+  return !config.public && isLoopback(req);
+}
 function admin(req, res, next) {
-  const given = req.get('x-admin-token') || req.query.admin;
-  if (config.adminToken) {
-    if (given === config.adminToken) return next();
-    return res.status(403).json({ error: 'admin token required' });
-  }
-  if (isLoopback(req)) return next();
-  return res.status(403).json({ error: 'admin restricted to loopback (set PQMSG_ADMIN_TOKEN to allow remote)' });
+  if (adminOk(req.get('x-admin-token') || req.query.admin, req)) return next();
+  return res.status(403).json({ error: 'admin auth required — append ?admin=<token> (see server startup log)' });
 }
 const wrap = (fn) => (req, res) =>
   Promise.resolve(fn(req, res)).catch((e) => {
@@ -185,8 +188,8 @@ app.post(
 
 async function participantGuard(req, res, next) {
   try {
-    const list = await store.listConversations();
-    const meta = list.find((c) => c.convId === req.params.convId);
+    // hot path (hit on every client poll) — read one meta.json, not the whole tree
+    const meta = await store.getConversationMeta(req.params.convId);
     if (!meta) return res.status(404).json({ error: 'no such conversation' });
     if (!(meta.participants || []).includes(req.user)) return res.status(403).json({ error: 'not a participant' });
     req.convMeta = meta;
@@ -243,14 +246,16 @@ app.get(
   '/api/inbox',
   auth,
   wrap(async (req, res) => {
-    const convIds = await store.conversationsForParticipant(req.user);
-    const conversations = [];
-    for (const convId of convIds) {
-      const order = await store.getOrder(convId);
-      const list = await store.listConversations();
-      const meta = list.find((c) => c.convId === convId);
-      conversations.push({ convId, participants: meta.participants, kind: meta.kind, latestSeq: order.length });
-    }
+    // one directory scan, then fan out the per-conversation order reads in parallel
+    const mine = (await store.listConversations()).filter((c) => (c.participants || []).includes(req.user));
+    const conversations = await Promise.all(
+      mine.map(async (c) => ({
+        convId: c.convId,
+        participants: c.participants,
+        kind: c.kind,
+        latestSeq: (await store.getOrder(c.convId)).length,
+      }))
+    );
     res.json({ conversations, serverTime: Date.now() });
   })
 );
@@ -259,7 +264,7 @@ app.get(
 // dashboard / admin (ciphertext only)
 // --------------------------------------------------------------------------
 app.get('/api/admin/overview', admin, wrap(async (req, res) => {
-  res.json({ stats: await store.stats(), peers: presence.list().length, adminAuth: config.adminToken ? 'token' : 'loopback' });
+  res.json({ stats: await store.stats(), peers: presence.list().length, adminAuth: config.public ? 'token-only (public)' : 'token or loopback' });
 }));
 app.get('/api/admin/presence', admin, wrap(async (req, res) => res.json({ peers: presence.list() })));
 app.get('/api/admin/events', admin, wrap(async (req, res) =>
@@ -286,11 +291,10 @@ app.get('/api/admin/accounts', admin, wrap(async (req, res) => {
   res.json({ accounts: out });
 }));
 app.get('/api/admin/conversations', admin, wrap(async (req, res) =>
-  res.json({ conversations: await store.listConversations() })
+  res.json({ conversations: await store.listConversations({ counts: true }) })
 ));
 app.get('/api/admin/conv/:convId', admin, wrap(async (req, res) => {
-  const list = await store.listConversations();
-  const meta = list.find((c) => c.convId === req.params.convId);
+  const meta = await store.getConversationMeta(req.params.convId);
   if (!meta) throw Object.assign(new Error('no such conversation'), { status: 404 });
   const [messages, order] = await Promise.all([
     store.listMessages(req.params.convId, { sinceSeq: 0 }),
@@ -352,9 +356,7 @@ server.on('upgrade', (req, socket, head) => {
       wss.emit('connection', ws, req);
     });
   } else if (url.pathname === '/ws-admin') {
-    const given = url.searchParams.get('admin') || '';
-    const ok = config.adminToken ? given === config.adminToken : ['127.0.0.1', '::1'].includes((req.socket.remoteAddress || '').replace('::ffff:', ''));
-    if (!ok) return socket.destroy();
+    if (!adminOk(url.searchParams.get('admin') || '', req)) return socket.destroy();
     wssAdmin.handleUpgrade(req, socket, head, (ws) => wssAdmin.emit('connection', ws, req));
   } else {
     socket.destroy();
@@ -422,9 +424,11 @@ setInterval(() => {
     console.log('│  pqmsg server');
     console.log(`│  backend    : ${store.kind}${store.kind === 'github' ? ' (' + config.githubRepo + ')' : ' (' + config.dataDir + ')'}`);
     console.log(`│  listening  : ${config.host}:${config.port}`);
-    console.log(`│  dashboard  : ${url}/`);
-    console.log(`│  admin auth : ${config.adminToken ? 'PQMSG_ADMIN_TOKEN (env)' : 'loopback only — or use token below remotely'}`);
-    if (!config.adminToken) console.log(`│  admin token: ${shownAdmin}   (append ?admin=... for remote dashboard)`);
+    console.log(`│  mode       : ${config.public ? 'PUBLIC (loopback admin bypass OFF)' : 'local (loopback may skip admin token)'}`);
+    console.log(`│  dashboard  : ${url}/?admin=${shownAdmin}`);
+    console.log(`│  admin token: ${shownAdmin}${config.adminToken ? ' (from PQMSG_ADMIN_TOKEN)' : ' (auto — set PQMSG_ADMIN_TOKEN to pin it)'}`);
+    if (config.public && !config.adminToken)
+      console.log('│  ⚠ PUBLIC with an auto admin token — set PQMSG_ADMIN_TOKEN so it survives restarts');
     console.log('└───────────────────────────────────────────────');
   });
 })();
