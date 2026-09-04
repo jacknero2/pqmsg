@@ -130,8 +130,14 @@ Delivery acks retry every cycle until confirmed (the server is idempotent).
   dropped). Run it standalone (`npm run registry`) **or** let a server host it:
   a **master user** (`PQMSG_MASTER_EMAIL`, default `jnero@nd.edu`) sets a
   password, verifies it by email code, and the server then serves the registry
-  at `https://<server>/registry` — no separate service to deploy. The server
-  lists itself and can curate the entry list from the Server app.
+  at `https://<server>/registry` — no separate service to deploy. Forgot the
+  master password? "forgot password?" sends a reset code to the same email.
+  The server lists itself and can curate the entry list from the Server app.
+- Because a free Cloudflare quick-tunnel URL changes every restart, the Server
+  app can **auto-publish** the current registry URL into `docs/servers.json` on
+  your repo (GitHub Contents API) whenever it changes — paste a token once
+  (fine-grained PAT, that repo, Contents: write) and tick the box; nobody ever
+  copies a link again.
 
 ### Version gates
 

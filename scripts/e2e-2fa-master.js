@@ -142,6 +142,31 @@ async function waitHealth(url) {
   }
 
   try {
+    let r = await J('POST', A + '/api/master/reset', {});
+    assert.ok(r.j.needs2fa && r.j.devCode, 'forgot-password sends a reset code to the master email');
+    const resetCode = r.j.devCode;
+    const resetChallenge = r.j.challengeId;
+
+    let bad1 = await J('POST', A + '/api/master/reset/verify', { challengeId: resetChallenge, code: '000000', newPassword: 'brandnew123' });
+    assert.strictEqual(bad1.status, 401, 'wrong reset code rejected');
+
+    r = await J('POST', A + '/api/master/reset/verify', { challengeId: resetChallenge, code: resetCode, newPassword: 'brandnew123' });
+    assert.ok(r.j.ok, 'reset succeeds with the right code');
+
+    const oldPwLogin = await J('POST', A + '/api/master/login', { password: 'masterpw123' });
+    assert.notStrictEqual(oldPwLogin.status, 200, 'the old master password no longer works');
+
+    r = await J('POST', A + '/api/master/login', { password: 'brandnew123' });
+    assert.ok(r.j.needs2fa, 'the new master password logs in');
+    r = await J('POST', A + '/api/master/verify', { challengeId: r.j.challengeId, code: r.j.devCode });
+    masterToken = r.j.masterToken; // refresh for the rest of the suite
+    assert.ok(masterToken, 'new-password login completes');
+    ok('forgot master password: emailed reset code -> new password -> old password dead');
+  } catch (e) {
+    bad('master password reset', e);
+  }
+
+  try {
     const h = await J('GET', A + '/registry/health');
     assert.ok(h.j && h.j.ok, 'the registry is now mounted at /registry on server A');
     const info = await (await fetch(A + '/api/serverinfo')).json();
@@ -193,6 +218,43 @@ async function waitHealth(url) {
     ok('registry-enabled flag is persisted for restart');
   } catch (e) {
     bad('persistence', e);
+  }
+
+  console.log('\n── publish servers.json (mocked GitHub API) ─────');
+  try {
+    const { publishServersJson } = require('../server/app/publish');
+    const calls = [];
+    const realFetch = global.fetch;
+    let fileState = null; // null = 404 (doesn't exist yet)
+    global.fetch = async (url, opts) => {
+      calls.push({ url, method: (opts && opts.method) || 'GET' });
+      if ((!opts || !opts.method || opts.method === 'GET')) {
+        if (!fileState) return { ok: false, status: 404, json: async () => ({}) };
+        return { ok: true, status: 200, json: async () => fileState };
+      }
+      // PUT
+      const body = JSON.parse(opts.body);
+      const content = JSON.parse(Buffer.from(body.content, 'base64').toString('utf8'));
+      fileState = { sha: 'sha_' + calls.length, content: Buffer.from(JSON.stringify(content)).toString('base64') };
+      return { ok: true, status: 200, json: async () => ({ commit: { sha: 'commit_' + calls.length } }) };
+    };
+    try {
+      const r1 = await publishServersJson({ token: 'tok', repo: 'you/pqmsg', path: 'docs/servers.json', registryUrl: 'https://a.example.com/registry' });
+      assert.ok(r1.ok && r1.commit, 'first publish creates the file (no sha) and returns a commit');
+      const putCall = calls.find((c) => c.method === 'PUT');
+      assert.ok(putCall, 'issued a PUT to the Contents API');
+
+      const r2 = await publishServersJson({ token: 'tok', repo: 'you/pqmsg', path: 'docs/servers.json', registryUrl: 'https://a.example.com/registry' });
+      assert.strictEqual(r2.unchanged, true, 'publishing the same URL again is a no-op (does not re-commit)');
+
+      const r3 = await publishServersJson({ token: 'tok', repo: 'you/pqmsg', path: 'docs/servers.json', registryUrl: 'https://b.example.com/registry' });
+      assert.ok(r3.ok && !r3.unchanged, 'a changed URL publishes a new commit');
+      ok('publishServersJson: creates, is idempotent on no change, re-publishes on change');
+    } finally {
+      global.fetch = realFetch;
+    }
+  } catch (e) {
+    bad('publish servers.json', e);
   }
 
   console.log(`\n${fail ? '\x1b[31m' : '\x1b[32m'}${pass} passed, ${fail} failed\x1b[0m`);

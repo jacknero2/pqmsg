@@ -640,6 +640,33 @@ app.post(
   })
 );
 
+// forgot master password -> emailed reset code -> new password
+app.post(
+  '/api/master/reset',
+  wrap(async (req, res) => {
+    if (!masterState.hasPassword) throw Object.assign(new Error('no master password set — use /setup'), { status: 409 });
+    const { id, code } = challenges.create('master-reset', masterState.email, {});
+    const surf = await sendCode({ id, code, to: masterState.email, subject: 'pqmsg master registry — password reset' });
+    presence.log('master-reset-request', { email: maskEmail(masterState.email), dev: surf.dev });
+    res.json({ needs2fa: true, challengeId: id, email: maskEmail(masterState.email), ...surf });
+  })
+);
+app.post(
+  '/api/master/reset/verify',
+  wrap(async (req, res) => {
+    const newPassword = String(req.body.newPassword || '');
+    if (newPassword.length < 8) throw Object.assign(new Error('new password must be >= 8 chars'), { status: 400 });
+    const r = challenges.verify(String(req.body.challengeId || ''), String(req.body.code || ''));
+    if (!r.ok) {
+      const status = r.error === 'bad_code' ? 401 : r.error === 'too_many_attempts' ? 429 : 400;
+      throw Object.assign(new Error(r.error), { status });
+    }
+    masterState.setPassword(newPassword);
+    presence.log('master-reset-done', {});
+    res.json({ ok: true });
+  })
+);
+
 app.post('/api/master/registry/disable', requireMaster, wrap(async (req, res) => {
   masterState.setRegistryEnabled(false);
   res.json({ ok: true, registryEnabled: false });

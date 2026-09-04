@@ -97,29 +97,91 @@ function renderSmtp(state) {
 
 // ---- master registry ----
 let mrChallenge = null;
+let mrMode = 'auth'; // 'auth' | 'reset'
 $('mr-go').onclick = async () => {
   const pw = $('mr-pw').value;
   const note = $('mr-note');
   note.className = 'note';
   note.textContent = '…';
+  mrMode = 'auth';
   const hasPw = (window._state && window._state.master && window._state.master.hasPassword);
   const r = hasPw ? await window.srv.masterLogin(pw) : await window.srv.masterSetup(pw);
   if (r.error) { note.className = 'note err'; note.textContent = r.error; return; }
   mrChallenge = r.challengeId;
   $('mr-code').hidden = false;
+  $('mr-newpw-l').hidden = true;
+  $('mr-code-to').textContent = r.email || 'jnero@nd.edu';
   note.className = 'note';
   note.textContent = r.dev ? `email not configured — code: ${r.devCode}` : `code sent to ${r.email}`;
   if (r.dev && r.devCode) $('mr-code-in').value = r.devCode;
 };
-$('mr-verify').onclick = async () => {
-  const r = await window.srv.masterVerify(mrChallenge, $('mr-code-in').value.trim());
+$('mr-forgot').onclick = async () => {
   const note = $('mr-note');
+  note.className = 'note';
+  note.textContent = 'sending a reset code…';
+  mrMode = 'reset';
+  const r = await window.srv.masterReset();
+  if (r.error) { note.className = 'note err'; note.textContent = r.error; return; }
+  mrChallenge = r.challengeId;
+  $('mr-code').hidden = false;
+  $('mr-newpw-l').hidden = false;
+  $('mr-code-to').textContent = r.email || 'jnero@nd.edu';
+  note.className = 'note';
+  note.textContent = r.dev ? `email not configured — code: ${r.devCode}` : `reset code sent to ${r.email}`;
+  if (r.dev && r.devCode) $('mr-code-in').value = r.devCode;
+};
+$('mr-verify').onclick = async () => {
+  const note = $('mr-note');
+  const code = $('mr-code-in').value.trim();
+  if (mrMode === 'reset') {
+    const newPw = $('mr-newpw').value;
+    if (newPw.length < 8) { note.className = 'note err'; note.textContent = 'new password must be >= 8 chars'; return; }
+    const r = await window.srv.masterResetVerify(mrChallenge, code, newPw);
+    if (r.error || !r.ok) { note.className = 'note err'; note.textContent = r.error || 'reset failed'; return; }
+    mrChallenge = null; mrMode = 'auth';
+    $('mr-code').hidden = true; $('mr-newpw-l').hidden = true;
+    $('mr-pw').value = $('mr-code-in').value = $('mr-newpw').value = '';
+    note.className = 'note ok';
+    note.textContent = 'password reset — log in with your new password';
+    return;
+  }
+  const r = await window.srv.masterVerify(mrChallenge, code);
   if (r.error || r.registryEnabled !== true) { note.className = 'note err'; note.textContent = r.error || 'verification failed'; return; }
   mrChallenge = null;
   $('mr-code').hidden = true;
   $('mr-pw').value = $('mr-code-in').value = '';
 };
 $('mr-disable').onclick = () => window.srv.masterRegistry('disable');
+
+// ---- publish registry to GitHub (servers.json) ----
+$('pub-repo').addEventListener('change', () => window.srv.setPublish({ ghRepo: $('pub-repo').value.trim() }));
+$('pub-token').addEventListener('change', () => {
+  const t = $('pub-token').value;
+  if (t) window.srv.setPublish({ ghToken: t });
+  $('pub-token').value = '';
+});
+$('pub-on').addEventListener('change', () => window.srv.setPublish({ publishRegistry: $('pub-on').checked }));
+function renderPublish(state) {
+  const p = state.publish || {};
+  $('pub-target').textContent = `${p.repo || 'you/pqmsg'}/${p.path || 'docs/servers.json'}`;
+  if (document.activeElement !== $('pub-repo') && !$('pub-repo').value) $('pub-repo').value = p.repo || '';
+  if (document.activeElement !== $('pub-on')) $('pub-on').checked = !!p.enabled;
+  $('pub-token').placeholder = p.hasToken ? '•••••••• (leave blank to keep)' : 'paste a GitHub token';
+  const st = $('pub-status');
+  if (!p.enabled) {
+    st.className = 'note'; st.textContent = '';
+  } else if (!p.hasToken) {
+    st.className = 'note err'; st.textContent = 'paste a GitHub token above to enable publishing';
+  } else if (p.phase === 'publishing') {
+    st.className = 'note'; st.textContent = 'publishing…';
+  } else if (p.phase === 'error') {
+    st.className = 'note err'; st.textContent = 'publish failed: ' + p.error;
+  } else if (p.lastPublishedUrl) {
+    st.className = 'note ok'; st.textContent = `published ✓ — clients fetching ${p.repo} see this registry`;
+  } else {
+    st.className = 'note'; st.textContent = 'waiting for the registry to be listed…';
+  }
+}
 async function refreshEntries() {
   if (!window._state || !window._state.master || !window._state.master.unlocked) return;
   const r = await window.srv.masterRegistry('entries');
@@ -137,10 +199,12 @@ function renderMaster(state) {
   $('mr-email').textContent = m.email || 'jnero@nd.edu';
   $('mr-url').textContent = (state.publicUrl || 'https://your-server') + '/registry';
   $('mr-pw-label').textContent = m.hasPassword ? 'master password' : 'set master password (min 8)';
+  $('mr-forgot').hidden = !m.hasPassword || !$('mr-code').hidden;
   const active = m.registryEnabled && m.unlocked;
   $('mr-setup').hidden = active;
   $('mr-active').hidden = !active;
-  if (m.registryEnabled && !m.unlocked) {
+  if (active) renderPublish(state);
+  if (m.registryEnabled && !m.unlocked && $('mr-code').hidden) {
     $('mr-note').className = 'note ok';
     $('mr-note').textContent = 'registry is ON — log in as master to manage it';
   }

@@ -53,6 +53,10 @@ button.mini { padding: 2px 8px; font-size: 10px; }
 .mr-entries { max-height: 120px; margin-top: 6px; }
 .mr-row { display: flex; justify-content: space-between; align-items: center; margin: 2px 0; font-size: 11px; gap: 8px; }
 .mr-row .mini { padding: 1px 7px; font-size: 10px; }
+.linkbtn { background: none; border: none; color: var(--dim); text-decoration: underline; cursor: pointer; padding: 4px 2px; font-family: var(--mono); font-size: 11px; }
+.linkbtn:hover { color: var(--cyan); }
+.pub { margin-top: 14px; padding-top: 12px; border-top: 1px solid var(--line); }
+.pub-h { color: var(--ink); text-transform: none; font-size: 12px; letter-spacing: 0; }
 
 .scroll { flex: 1; overflow-y: auto; border: 1px solid var(--line); border-radius: 7px; background: #0a0f15; padding: 4px; }
 .scroll.mono { font-size: 10.5px; color: #5f7688; }

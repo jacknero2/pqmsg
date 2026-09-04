@@ -68,9 +68,14 @@
         <div class="kv"><span>master email</span><code id="mr-email">jnero@nd.edu</code></div>
         <div id="mr-setup">
           <label class="fld"><span id="mr-pw-label">set master password (min 8)</span><input id="mr-pw" type="password" placeholder="••••••••" /></label>
-          <div class="row"><button id="mr-go" class="primary">continue</button><span id="mr-note" class="note"></span></div>
+          <div class="row">
+            <button id="mr-go" class="primary">continue</button>
+            <button id="mr-forgot" class="linkbtn" type="button" hidden>forgot password?</button>
+            <span id="mr-note" class="note"></span>
+          </div>
           <div id="mr-code" hidden>
-            <label class="fld">verification code (sent to jnero@nd.edu)<input id="mr-code-in" inputmode="numeric" maxlength="6" placeholder="123456" /></label>
+            <label class="fld">verification code (sent to <span id="mr-code-to">jnero@nd.edu</span>)<input id="mr-code-in" inputmode="numeric" maxlength="6" placeholder="123456" /></label>
+            <label class="fld" id="mr-newpw-l" hidden>new master password (min 8)<input id="mr-newpw" type="password" placeholder="••••••••" /></label>
             <div class="row"><button id="mr-verify" class="primary">verify</button></div>
           </div>
         </div>
@@ -78,6 +83,14 @@
           <div class="note ok">registry active · <span id="mr-count">0</span> server(s) listed</div>
           <div id="mr-entries" class="scroll mr-entries"></div>
           <div class="row"><button id="mr-disable" class="ghost">disable registry</button></div>
+          <div class="pub">
+            <div class="fld pub-h">publish this registry to the web so clients auto‑discover it</div>
+            <p class="hint">Writes your current registry URL to <code id="pub-target">…/servers.json</code> on every restart, so nobody copies links. Needs a GitHub token with <strong>Contents: write</strong> on your repo (create one at github.com/settings/tokens).</p>
+            <label class="fld">GitHub token<input id="pub-token" type="password" placeholder="(leave blank to keep)" /></label>
+            <label class="fld">repo<input id="pub-repo" placeholder="you/pqmsg" /></label>
+            <label class="chk"><input id="pub-on" type="checkbox" /> keep servers.json pointed at this registry</label>
+            <div id="pub-status" class="note"></div>
+          </div>
         </div>
       </section>
 

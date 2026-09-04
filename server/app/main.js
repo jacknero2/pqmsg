@@ -24,9 +24,12 @@ const cfgPath = () => path.join(app.getPath('userData'), 'server-app-config.json
 const DEFAULT_CFG = {
   name: '', description: '', registryUrl: '', listPublicly: false, minClient: '', latestClient: '',
   smtpHost: '', smtpPort: '587', smtpUser: '', smtpPass: '', smtpFrom: '', smtpSecure: false,
+  // auto-publish the master-registry URL to a repo file so clients discover it
+  ghToken: '', ghRepo: 'jacknero2/pqmsg', ghPath: 'docs/servers.json', publishRegistry: false, lastPublishedUrl: '',
 };
 let appCfg = { ...DEFAULT_CFG };
 let masterToken = null; // held in memory after a master login
+let _pubState = { phase: 'off', error: null, at: 0 };
 const api = (m, p, body, hdr) =>
   fetch(`http://127.0.0.1:${PORT}${p}`, {
     method: m,
@@ -36,12 +39,20 @@ const api = (m, p, body, hdr) =>
 function loadCfg() {
   try {
     appCfg = { ...DEFAULT_CFG, ...JSON.parse(fs.readFileSync(cfgPath(), 'utf8')) };
-  } catch {}
+    console.log(`[cfg] loaded ${cfgPath()}  smtp=${appCfg.smtpHost || 'none'}  publish=${appCfg.publishRegistry}`);
+  } catch (e) {
+    console.log(`[cfg] using defaults (${e.code || e.message})`);
+  }
 }
 function saveCfg() {
   try {
-    fs.writeFileSync(cfgPath(), JSON.stringify(appCfg, null, 2));
-  } catch {}
+    fs.mkdirSync(path.dirname(cfgPath()), { recursive: true });
+    const tmp = cfgPath() + '.tmp';
+    fs.writeFileSync(tmp, JSON.stringify(appCfg, null, 2));
+    fs.renameSync(tmp, cfgPath()); // atomic
+  } catch (e) {
+    console.error('[cfg] save failed:', e.message);
+  }
 }
 
 function lanAddresses() {
@@ -91,6 +102,35 @@ function reconcileAnnounce() {
     server.stopAnnouncing();
   }
   wireAnnouncer();
+  reconcilePublish(selfReg || regUrl);
+}
+
+const { publishServersJson } = require('./publish');
+let _pubTimer = null;
+/** keep the repo's servers.json pointing at our current registry URL */
+function reconcilePublish(regUrl) {
+  if (!appCfg.publishRegistry || !appCfg.ghToken || !regUrl) return;
+  if (regUrl === appCfg.lastPublishedUrl) {
+    _pubState = { phase: 'ok', error: null, at: appCfg.__pubAt || Date.now() };
+    return;
+  }
+  clearTimeout(_pubTimer);
+  _pubTimer = setTimeout(async () => {
+    _pubState = { phase: 'publishing', error: null, at: Date.now() };
+    pushState();
+    try {
+      await publishServersJson({ token: appCfg.ghToken, repo: appCfg.ghRepo, path: appCfg.ghPath, registryUrl: regUrl });
+      appCfg.lastPublishedUrl = regUrl;
+      appCfg.__pubAt = Date.now();
+      saveCfg();
+      _pubState = { phase: 'ok', error: null, at: Date.now() };
+      console.log('[publish] servers.json -> ' + regUrl);
+    } catch (e) {
+      _pubState = { phase: 'error', error: e.message, at: Date.now() };
+      console.error('[publish] failed:', e.message);
+    }
+    pushState();
+  }, 1500);
 }
 
 function snapshot() {
@@ -112,9 +152,19 @@ function snapshot() {
     master: server && server.masterStatus ? { ...server.masterStatus(), unlocked: !!masterToken } : { email: 'jnero@nd.edu', hasPassword: false, registryEnabled: false, unlocked: false },
     registryEntryCount: server && server.registryEntryCount ? server.registryEntryCount() : 0,
     publicUrl: (tunnel.url || (lanAddresses()[0] ? `http://${lanAddresses()[0]}:${PORT}` : '')),
+    publish: {
+      enabled: appCfg.publishRegistry,
+      hasToken: !!appCfg.ghToken,
+      repo: appCfg.ghRepo,
+      path: appCfg.ghPath,
+      lastPublishedUrl: appCfg.lastPublishedUrl,
+      phase: _pubState.phase,
+      error: _pubState.error,
+    },
     listing: {
       ...appCfg,
       smtpPass: undefined,
+      ghToken: undefined,
       publicId: server && server.registryIdentity ? server.registryIdentity.publicId : null,
       announce: ann ? ann.snapshot() : null,
     },
@@ -229,8 +279,23 @@ if (!app.requestSingleInstanceLock()) {
       pushState();
       return snapshot();
     });
+    ipcMain.handle('set-publish', (_e, patch) => {
+      appCfg = { ...appCfg, ...(patch || {}) };
+      saveCfg();
+      _pubState = { phase: 'off', error: null, at: 0 };
+      appCfg.lastPublishedUrl = ''; // force a re-publish with the new settings
+      reconcileAnnounce();
+      pushState();
+      return snapshot();
+    });
     ipcMain.handle('master-setup', async (_e, { password }) => (await api('POST', '/api/master/setup', { password })).j);
     ipcMain.handle('master-login', async (_e, { password }) => (await api('POST', '/api/master/login', { password })).j);
+    ipcMain.handle('master-reset', async () => (await api('POST', '/api/master/reset', {})).j);
+    ipcMain.handle('master-reset-verify', async (_e, { challengeId, code, newPassword }) => {
+      const r = await api('POST', '/api/master/reset/verify', { challengeId, code, newPassword });
+      pushState();
+      return r.j;
+    });
     ipcMain.handle('master-verify', async (_e, { challengeId, code }) => {
       const r = await api('POST', '/api/master/verify', { challengeId, code });
       if (r.j.masterToken) masterToken = r.j.masterToken;
