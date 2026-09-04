@@ -4,63 +4,95 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>pqmsg — post-quantum messenger</title>
-    <meta name="description" content="Download pqmsg: a post-quantum end-to-end encrypted messenger. ML-KEM-1024 + ML-DSA-87 + AES-256-GCM." />
+    <meta name="description" content="pqmsg: a federated, post-quantum end-to-end encrypted messenger. ML-KEM-1024, ML-DSA-87, AES-256-GCM." />
     <link rel="stylesheet" href="style.css" />
   </head>
   <body>
     <main>
       <header>
         <h1>pqmsg<span class="cursor">_</span></h1>
-        <p class="tag">post-quantum end-to-end encrypted messaging<br />
-          <span class="dim">ML-KEM-1024 · ML-DSA-87 · AES-256-GCM · your keys never leave your device</span>
+        <p class="tag">Federated, post-quantum end-to-end encrypted messenger.<br />
+          <span class="dim">ML-KEM-1024 (FIPS 203) · ML-DSA-87 (FIPS 204) · AES-256-GCM</span>
         </p>
       </header>
 
+      <section>
+        <h2>components</h2>
+        <p class="dim">Two applications, distributed separately. The client is required to send or receive messages. The server is required to host an account; one installation serves any number of accounts and devices, and can optionally run the server directory (registry).</p>
+        <table class="spec">
+          <tr><th>Client</th><td>Generates and stores the device's private keys locally. Encrypts, decrypts, and displays messages.</td></tr>
+          <tr><th>Server</th><td>Stores enrolled device public keys and encrypted message envelopes for its accounts, and relays ciphertext between clients. Never holds a private key.</td></tr>
+        </table>
+      </section>
+
       <section class="dl">
-        <h2>1 · get the client</h2>
-        <p class="dim">Everyone who wants to chat installs this. Free, unsigned — your OS will ask you to confirm the first launch (steps below).</p>
+        <h2>client</h2>
         <div id="client-buttons" class="buttons"><span class="dim">loading latest release…</span></div>
         <p id="client-os-hint" class="oshint"></p>
       </section>
 
       <section class="dl">
-        <h2>2 · one person runs the server</h2>
-        <p class="dim">Only the host installs this. It runs the pqmsg server on their computer and, with one click, exposes a public
-          <code>https://…trycloudflare.com</code> address that clients anywhere enter — no router setup, works on university / corporate Wi‑Fi.</p>
+        <h2>server</h2>
+        <p class="dim">Installed by whoever hosts an account. Includes a Cloudflare Tunnel integration for reaching the server without inbound port forwarding or a static IP.</p>
         <div id="server-buttons" class="buttons"><span class="dim">loading…</span></div>
       </section>
 
       <section>
-        <h2>opening an unsigned build</h2>
+        <h2>unsigned builds</h2>
+        <p class="dim">Builds are not signed with a paid OS code-signing certificate. The operating system requires explicit confirmation before the first launch.</p>
         <div class="cols">
           <div>
             <h3>macOS</h3>
-            <p>Right‑click the app in <em>Applications</em> → <strong>Open</strong> → <strong>Open</strong>. If it says “damaged”, run once in Terminal:</p>
+            <p>Right-click the app in <em>Applications</em> → <strong>Open</strong> → <strong>Open</strong>. If it reports the app as damaged, run once in Terminal:</p>
             <pre>xattr -cr "/Applications/pqmsg.app"</pre>
           </div>
           <div>
             <h3>Windows</h3>
-            <p>SmartScreen shows “Windows protected your PC” → <strong>More info</strong> → <strong>Run anyway</strong>.</p>
+            <p>SmartScreen: <strong>More info</strong> → <strong>Run anyway</strong>.</p>
           </div>
           <div>
             <h3>Linux</h3>
-            <p><code>.AppImage</code>: <code>chmod +x</code> then run. <code>.deb</code>: <code>sudo apt install ./pqmsg*.deb</code>.</p>
+            <p><code>.AppImage</code>: <code>chmod +x</code>, then execute. <code>.deb</code>: <code>sudo apt install ./pqmsg*.deb</code>.</p>
           </div>
         </div>
       </section>
 
       <section>
-        <h2>how it works</h2>
-        <ol class="how">
-          <li>On first login the client generates an <strong>ML-KEM-1024</strong> + <strong>ML-DSA-87</strong> keypair locally. The private half stays on your machine.</li>
-          <li>Each message gets a random AES-256-GCM key, wrapped to every recipient device with ML-KEM and signed with ML-DSA.</li>
-          <li>The server only ever stores and relays ciphertext — it can list conversations and see who is online, but not read anything.</li>
-          <li>A background sync reconciles message order across devices (eventually consistent); delivered messages turn gold, undelivered stay red.</li>
-        </ol>
+        <h2>cryptographic primitives</h2>
+        <table class="spec">
+          <tr><th>Key encapsulation</th><td>ML-KEM-1024 — FIPS 203</td></tr>
+          <tr><th>Signatures</th><td>ML-DSA-87 — FIPS 204</td></tr>
+          <tr><th>Message encryption</th><td>AES-256-GCM</td></tr>
+          <tr><th>Key derivation</th><td>HKDF-SHA-256</td></tr>
+          <tr><th>Server identity</th><td>Ed25519</td></tr>
+        </table>
+      </section>
+
+      <section>
+        <h2>architecture</h2>
+        <dl class="how">
+          <dt>Enrollment</dt>
+          <dd>On first login the client generates an ML-KEM-1024 keypair and an ML-DSA-87 keypair locally, then signs an attestation binding both public keys to the account and device name. The server verifies the attestation and publishes the public keys to its identity directory. Private keys are never transmitted.</dd>
+
+          <dt>Message encryption</dt>
+          <dd>Each message is encrypted under a random AES-256-GCM key. That key is wrapped separately for every recipient device via ML-KEM-1024 encapsulation, and the resulting envelope is signed with the sender device's ML-DSA-87 key. A server stores and relays the ciphertext; it cannot decrypt it.</dd>
+
+          <dt>Federation</dt>
+          <dd>Accounts are addressed as <code>user@server</code>. Each conversation has one deterministic home server — the lexicographically lowest participant server for direct messages, or a fixed assignment for groups — which stores and orders that conversation. Clients read and write to a conversation's home server independent of which server hosts their own account.</dd>
+
+          <dt>Directory (registry)</dt>
+          <dd>A server announces its address to a registry with a signed, self-authenticated request; the registry verifies the announcement against the server's public identity before listing it. Clients query a configured registry on startup to resolve usernames to servers without manual server selection.</dd>
+
+          <dt>Authentication</dt>
+          <dd>Login requires a password and a time-limited code sent to the account's registered email address. A trusted-device token can bypass the code on a given device for 30 days.</dd>
+
+          <dt>Consistency</dt>
+          <dd>Message order is authoritative on the home server. Clients reconcile their local view against that order on a fixed interval and mark delivery per recipient device.</dd>
+        </dl>
       </section>
 
       <footer>
-        <a id="repo-link" href="https://github.com/jacknero2/pqmsg">source on GitHub</a>
+        <a id="repo-link" href="https://github.com/jacknero2/pqmsg">source</a>
         <span class="dim" id="version-line"></span>
       </footer>
     </main>

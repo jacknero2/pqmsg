@@ -36,7 +36,14 @@ h3 { font-size: 13px; color: var(--cyan); margin: 0 0 6px; }
 .cols > div { background: var(--card); border: 1px solid var(--line); border-radius: 8px; padding: 14px; }
 .cols p { margin: 6px 0; font-size: 12.5px; }
 
-ol.how { padding-left: 20px; }
-ol.how li { margin: 8px 0; }
+table.spec { width: 100%; border-collapse: collapse; margin-top: 12px; font-size: 12.5px; }
+table.spec th, table.spec td { text-align: left; padding: 9px 0; vertical-align: top; }
+table.spec th { color: var(--cyan); font-weight: normal; padding-right: 20px; white-space: nowrap; width: 1%; }
+table.spec tr + tr th, table.spec tr + tr td { border-top: 1px solid var(--line); }
+
+dl.how { margin: 0; }
+dl.how dt { color: var(--cyan); font-size: 12.5px; margin-top: 20px; }
+dl.how dt:first-child { margin-top: 0; }
+dl.how dd { margin: 6px 0 0; font-size: 13px; }
 
 footer { margin-top: 60px; padding-top: 18px; border-top: 1px solid var(--line); display: flex; justify-content: space-between; font-size: 12px; }

@@ -81,11 +81,11 @@ function renderGroup(el, assets, myOS) {
     renderGroup($('#server-buttons'), server, myOS);
 
     const hint = {
-      mac: 'Detected macOS — pick Apple Silicon for M1–M4 Macs, Intel for older ones.',
-      win: 'Detected Windows.',
-      linux: 'Detected Linux.',
-      ios: 'You’re on iOS — there’s no iPhone/iPad build. Install pqmsg on a Mac, Windows or Linux computer.',
-      android: 'You’re on Android — there’s no Android build yet. Install pqmsg on a computer.',
+      mac: 'Detected macOS. Apple Silicon (M1–M4): arm64 build. Intel: x64 build.',
+      win: 'Detected Windows (x64).',
+      linux: 'Detected Linux (x64).',
+      ios: 'No iOS build exists. Install on macOS, Windows, or Linux.',
+      android: 'No Android build exists. Install on macOS, Windows, or Linux.',
     }[myOS];
     if (hint) {
       $('#client-os-hint').textContent = hint;
