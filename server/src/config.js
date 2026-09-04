@@ -23,22 +23,18 @@ const config = {
   githubRepo: process.env.GITHUB_REPO || '',
   githubBranch: process.env.GITHUB_BRANCH || 'main',
   adminToken: process.env.PQMSG_ADMIN_TOKEN || '', // extra admin token (an auto one always exists too)
-  // set PQMSG_PUBLIC=1 for any internet-facing deployment (tunnel, cloud): it
-  // disables the "loopback requests skip the admin token" bypass, which is unsafe
-  // behind a proxy/tunnel because every request then originates from 127.0.0.1.
+  // set PQMSG_PUBLIC=1 for any internet-facing deployment: it disables the
+  // "loopback requests skip the admin token" bypass, which is unsafe behind a
+  // reverse proxy (Caddy) because every request then originates from 127.0.0.1.
   public: /^(1|true|yes)$/i.test(process.env.PQMSG_PUBLIC || ''),
 
-  // --- public directory listing (see registry/) ---
   serverName: process.env.PQMSG_SERVER_NAME || '',
   serverDescription: process.env.PQMSG_SERVER_DESCRIPTION || '',
-  serverRegion: process.env.PQMSG_SERVER_REGION || '',
-  serverPublicUrl: process.env.PQMSG_PUBLIC_URL || '', // the https URL clients actually use (tunnel / domain)
-  registryUrl: process.env.PQMSG_REGISTRY_URL || '',
-  announce: /^(1|true|yes)$/i.test(process.env.PQMSG_ANNOUNCE || ''),
+  serverPublicUrl: process.env.PQMSG_PUBLIC_URL || '', // the https URL clients actually use
 
   // --- client version gate: served at /api/serverinfo, enforced by clients ---
-  minClient: process.env.PQMSG_MIN_CLIENT || '', // clients below this are hard-blocked from this server
-  latestClient: process.env.PQMSG_LATEST_CLIENT || '', // newest known; clients below get a soft "update available"
+  minClient: process.env.PQMSG_MIN_CLIENT || '', // clients below this are hard-blocked
+  latestClient: process.env.PQMSG_LATEST_CLIENT || '', // newest known; clients below get a soft nag
   clientDownloadUrl: process.env.PQMSG_DOWNLOAD_URL || 'https://jacknero2.github.io/pqmsg/',
 
   // --- email 2FA on login (SMTP via nodemailer; dev fallback if unset) ---
@@ -50,12 +46,11 @@ const config = {
   smtpSecure: /^(1|true|yes)$/i.test(process.env.PQMSG_SMTP_SECURE || ''),
   trustedDeviceDays: parseInt(process.env.PQMSG_TRUST_DAYS || '30', 10),
 
-  // --- master registry: this server can host the directory itself ---
-  masterEmail: (process.env.PQMSG_MASTER_EMAIL || 'jnero@nd.edu').toLowerCase(),
-
-  // federation SSRF knobs (also read directly by federation.js / registry)
-  fedAllowInsecure: /^(1|true|yes)$/i.test(process.env.PQMSG_FED_ALLOW_INSECURE || ''),
-  fedTrustAll: /^(1|true|yes)$/i.test(process.env.PQMSG_FED_TRUST_ALL || ''),
+  // --- diagnostics: best-effort error reporting to a GitHub repo the operator
+  // controls; opt-in, off unless set ---
+  sendDiagnostics: /^(1|true|yes)$/i.test(process.env.PQMSG_SEND_DIAGNOSTICS || ''),
+  diagToken: process.env.PQMSG_DIAG_TOKEN || process.env.GITHUB_TOKEN || '',
+  diagRepo: process.env.PQMSG_DIAG_REPO || process.env.GITHUB_REPO || '',
 };
 
 module.exports = { config };

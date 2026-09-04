@@ -1,31 +1,18 @@
-# Deploying pqmsg so people elsewhere can connect
+# Deploying the pqmsg server
 
-Clients talk to **one server**; there is no client-to-client path. To let someone
-on another network (incl. a restrictive university network) join, that server
-needs a public `https://` URL.
-
----
-
-## 0. The pqmsg Server app (easiest — no terminal)
-
-Install **pqmsg Server** from https://jacknero2.github.io/pqmsg/, open it, click
-**“make reachable from the internet.”** It runs the server and a bundled
-Cloudflare tunnel, then shows a `https://…trycloudflare.com` address. Give that
-address to people; they paste it into the `server` field of their pqmsg client.
-Data lives in `~/Library/Application Support/pqmsg Server/server-data` (macOS) /
-`%APPDATA%\pqmsg Server\server-data` (Windows). The tunnel URL changes each time
-you restart the app — for a fixed address use a named tunnel or a cloud host
-(below).
-
-The rest of this file is the manual / production equivalents.
+There is one production server: `chat.jacknero.com`. The packaged client
+always points there (`client/main/engine.js`'s `SERVER_URL`), so end users
+never configure anything — download, sign up, done. This file is for
+whoever operates that server (or a dev/test server of their own).
 
 ---
 
-## A. Cloudflare Tunnel — server stays on your laptop (free, ~2 min)
+## A. Local dev/testing — a quick Cloudflare tunnel
 
-Best for testing with a few people over a few days. No account beyond a free
-Cloudflare login for the quick tunnel; works from behind any NAT/firewall
-because the tunnel dials **out** from your machine over 443.
+Useful for testing a server from a phone or another machine without deploying
+anything. Not for production — the hostname changes every restart, and a
+[client override](#pointing-a-dev-client-at-it) is required since the packaged
+app doesn't have a server picker.
 
 ```bash
 brew install cloudflared        # once
@@ -40,52 +27,52 @@ cloudflared tunnel --url http://localhost:8787
 #   prints:  https://<random-words>.trycloudflare.com
 ```
 
-Then:
+Dashboard: `https://<random-words>.trycloudflare.com/?admin=<the token>`.
 
-- **Clients** (anywhere): set the server URL to
-  `https://<random-words>.trycloudflare.com` — register, log in. WebSockets
-  upgrade to `wss://` automatically.
-- **Dashboard**: `https://<random-words>.trycloudflare.com/?admin=<the token>`
+`PQMSG_PUBLIC=1` is **required** for any internet-facing run. Behind a tunnel
+every request looks like `127.0.0.1`, so without it the admin dashboard would
+be open to the world.
 
-Notes:
+#### Pointing a dev client at it
 
-- `PQMSG_PUBLIC=1` is **required** for any internet-facing run. Behind a tunnel
-  every request looks like `127.0.0.1`, so without it the admin dashboard would
-  be open to the world. `PQMSG_PUBLIC=1` turns off that loopback bypass and
-  forces the admin token.
-- The quick-tunnel hostname changes every restart. For a stable name, create a
-  **named tunnel** (needs a domain on Cloudflare, still free):
-  `cloudflared tunnel login` → `cloudflared tunnel create pqmsg` →
-  `cloudflared tunnel route dns pqmsg chat.example.com` →
-  `cloudflared tunnel run --url http://localhost:8787 pqmsg`.
-- Your laptop must stay awake and online. `server-data/` persists locally.
+Run the client from source with `PQMSG_SERVER_URL` set to your tunnel/test
+URL — the packaged app has no server field, this env var is the only way to
+override it:
+
+```bash
+PQMSG_SERVER_URL=https://<random-words>.trycloudflare.com PQMSG_PROFILE=test npm run client
+```
 
 ---
 
-## B. Always-on cloud server (free tier: Oracle Always Free; or ~$5/mo VPS)
+## B. Production — an always-on VPS behind a real domain
 
-Best once other people actually depend on it. Target: ~100 concurrent users is a
-single small instance — no load balancer, no Redis, no autoscaling.
+This is how `chat.jacknero.com` runs. Immune to a laptop sleeping, campus/
+corporate DNS blocking `*.trycloudflare.com`, and quick-tunnel rotation — a
+real IP, a real domain, always on. ~100 concurrent users is a single small
+instance — no load balancer, no Redis, no autoscaling.
 
-1. Provision a small VM (Oracle Cloud "Always Free" ARM, or a $5 Hetzner/DO box).
-   1 vCPU / 1 GB RAM / a few GB disk is plenty.
-2. Install Node 18+ and [Caddy](https://caddyserver.com/docs/install).
-3. Clone the repo, `npm ci`, then run the server on `127.0.0.1:8787`:
+**`deploy/setup.sh` does steps 2–4 for you** on a fresh Ubuntu/Debian box
+(installs Node 20 + Caddy, clones the repo, creates a `pqmsg` systemd service,
+writes a Caddyfile, pins an admin token):
+
+1. Provision a small VM (Oracle Cloud "Always Free" ARM, or a $5–6/mo
+   Hetzner/DigitalOcean box — 1 vCPU / 1 GB RAM / a few GB disk is plenty) and
+   point a DNS **A record** for your hostname at its public IP.
+2. Edit `deploy/pqmsg.env.example` → hostname (`PQMSG_PUBLIC_URL`), server name,
+   optional SMTP, before running the script (or edit `deploy/pqmsg.env` after
+   the first run and re-run the script).
+3. SSH in and run:
    ```bash
-   PQMSG_PUBLIC=1 PQMSG_ADMIN_TOKEN=xxxxxxxx PQMSG_HOST=127.0.0.1 \
-     node server/src/index.js
+   curl -fsSL https://raw.githubusercontent.com/jacknero2/pqmsg/main/deploy/setup.sh | sudo bash
    ```
-   (Put it under `systemd` or `pm2` so it restarts.)
-4. `Caddyfile` — Caddy gets a Let's Encrypt cert and terminates HTTPS/WSS on 443:
-   ```
-   chat.example.com {
-       reverse_proxy 127.0.0.1:8787
-   }
-   ```
-   `caddy run` (or `systemctl start caddy`). WebSockets pass through with no extra
-   config.
-5. Clients use `https://chat.example.com`. Dashboard:
-   `https://chat.example.com/?admin=<token>`.
+4. It prints the dashboard URL (`https://<host>/?admin=<token>`) when done.
+   `journalctl -u pqmsg -f` for logs; `systemctl restart pqmsg` after a
+   `git -C /opt/pqmsg pull` + `npm ci --omit=dev` to deploy an update.
+
+If the hostname is `chat.jacknero.com`, packaged clients already point there —
+nothing else to configure. Deploying under a different hostname means also
+changing `SERVER_URL` in `client/main/engine.js` and cutting a new client release.
 
 ### Storage on a cloud host
 

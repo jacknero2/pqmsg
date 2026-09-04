@@ -12,7 +12,6 @@ $('btn-register').onclick = async () => {
   m.className = 'msg';
   m.textContent = 'registering…';
   const r = await window.pqmsg.register({
-    serverUrl: $('in-server').value.trim(),
     username: $('in-user').value.trim(),
     email: $('in-email').value.trim(),
     password: $('in-pass').value,
@@ -29,7 +28,6 @@ $('btn-login').onclick = async () => {
   m.className = 'msg';
   m.textContent = 'checking password…';
   const r = await window.pqmsg.login({
-    serverUrl: $('in-server').value.trim(),
     username: $('in-user').value.trim(),
     password: $('in-pass').value,
     deviceName: $('in-device').value.trim() || undefined,
@@ -73,55 +71,6 @@ $('btn-2fa').onclick = async () => {
 };
 $('in-code').addEventListener('keydown', (e) => e.key === 'Enter' && $('btn-2fa').click());
 
-// ---------- server picker ----------
-$('sp-refresh').onclick = () => {
-  $('sp-list').innerHTML = '<span class="dim">discovering…</span>';
-  window.pqmsg.discoverServers();
-};
-$('sp-add-btn').onclick = async () => {
-  const url = $('sp-url').value.trim();
-  if (!url) return;
-  const r = await window.pqmsg.pinServer(url, url);
-  if (!r.ok) {
-    $('newconv-msg') && ($('newconv-msg').textContent = r.error);
-    alert(r.error);
-  } else {
-    $('sp-url').value = '';
-  }
-};
-$('sp-url').addEventListener('keydown', (e) => e.key === 'Enter' && $('sp-add-btn').click());
-
-function renderServerPicker(s) {
-  const list = $('sp-list');
-  const servers = s.servers || [];
-  if (!servers.length) {
-    list.innerHTML = '<span class="dim">no servers found — paste a URL below, or ask a friend for theirs</span>';
-    return;
-  }
-  const cur = $('in-server').value.trim().replace(/\/+$/, '');
-  list.innerHTML = servers
-    .map((sv) => {
-      const url = (sv.url || '').replace(/\/+$/, '');
-      const name = sv.name || url;
-      const lat = sv.online ? `${sv.latencyMs}ms` : 'offline';
-      const clients = sv.online && sv.clients != null ? ` · ${sv.clients} online` : '';
-      const badges =
-        `<span class="b">${esc(sv.source || '')}</span>` +
-        (sv.verified ? '<span class="b ok">verified</span>' : '') +
-        (sv.needsUpdate ? '<span class="b">needs newer app</span>' : '');
-      return `<div class="sp-row ${url === cur ? 'sel' : ''}" data-url="${esc(url)}">
-        <div class="r1"><span class="sp-dot ${sv.online ? 'on' : ''}"></span><span class="nm">${esc(name)}</span>${badges}</div>
-        <div class="r2">${esc(sv.description || url)} · ${lat}${clients}</div>
-      </div>`;
-    })
-    .join('');
-  for (const row of list.querySelectorAll('.sp-row')) {
-    row.onclick = () => {
-      $('in-server').value = row.dataset.url;
-      renderServerPicker(state);
-    };
-  }
-}
 
 // ---------- update prompts ----------
 $('ur-btn').onclick = () => state && state.updateGate && window.pqmsg.openExternal(state.updateGate.downloadUrl);
@@ -260,19 +209,7 @@ function render() {
   const loggedIn = state.enrolled && !state.needsLogin;
   $('login').hidden = loggedIn;
   $('app').hidden = !loggedIn;
-  if (!loggedIn) {
-    renderServerPicker(state);
-    // zero-config: default the account server to the registry host
-    const auto = state.accountServer || '';
-    if (auto && (!$('in-server').value || $('in-server').value === 'http://localhost:8787' || $('in-server').dataset.auto === auto)) {
-      $('in-server').value = auto;
-      $('in-server').dataset.auto = auto;
-    }
-    $('server-auto').textContent = auto
-      ? `your account will be created on ${auto.replace(/^https?:\/\//, '')} (from the registry)`
-      : 'no registry configured — open "advanced" to enter a server address';
-    return;
-  }
+  if (!loggedIn) return;
 
   $('hdr-user').textContent = '@' + state.username;
   $('hdr-device').textContent = state.deviceName || '';
@@ -396,7 +333,6 @@ async function refresh() {
   if (r.ok) {
     state = r.data;
     render();
-    if (state.needsLogin || !state.enrolled) window.pqmsg.discoverServers(); // populate the picker
   }
 }
 refresh();

@@ -4,37 +4,30 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>pqmsg — post-quantum messenger</title>
-    <meta name="description" content="pqmsg: a federated, post-quantum end-to-end encrypted messenger. ML-KEM-1024, ML-DSA-87, AES-256-GCM." />
+    <meta name="description" content="pqmsg: a post-quantum end-to-end encrypted messenger. ML-KEM-1024, ML-DSA-87, AES-256-GCM." />
     <link rel="stylesheet" href="style.css" />
   </head>
   <body>
     <main>
       <header>
         <h1>pqmsg<span class="cursor">_</span></h1>
-        <p class="tag">Federated, post-quantum end-to-end encrypted messenger.<br />
+        <p class="tag">Post-quantum end-to-end encrypted messenger.<br />
           <span class="dim">ML-KEM-1024 (FIPS 203) · ML-DSA-87 (FIPS 204) · AES-256-GCM</span>
         </p>
       </header>
 
       <section>
-        <h2>components</h2>
-        <p class="dim">Two applications, distributed separately. The client is required to send or receive messages. The server is required to host an account; one installation serves any number of accounts and devices, and can optionally run the server directory (registry).</p>
-        <table class="spec">
-          <tr><th>Client</th><td>Generates and stores the device's private keys locally. Encrypts, decrypts, and displays messages.</td></tr>
-          <tr><th>Server</th><td>Stores enrolled device public keys and encrypted message envelopes for its accounts, and relays ciphertext between clients. Never holds a private key.</td></tr>
-        </table>
+        <h2>what this is</h2>
+        <p class="dim">A single client app. Download it, create an account, and message anyone else who has —
+          no server address to configure, no account to set up elsewhere. Every account lives on one server
+          (<code>chat.jacknero.com</code>), so two strangers on opposite sides of the world end up in the
+          same address book the moment they both sign up.</p>
       </section>
 
       <section class="dl">
-        <h2>client</h2>
+        <h2>download</h2>
         <div id="client-buttons" class="buttons"><span class="dim">loading latest release…</span></div>
         <p id="client-os-hint" class="oshint"></p>
-      </section>
-
-      <section class="dl">
-        <h2>server</h2>
-        <p class="dim">Installed by whoever hosts an account. Includes a Cloudflare Tunnel integration for reaching the server without inbound port forwarding or a static IP.</p>
-        <div id="server-buttons" class="buttons"><span class="dim">loading…</span></div>
       </section>
 
       <section>
@@ -64,7 +57,6 @@
           <tr><th>Signatures</th><td>ML-DSA-87 — FIPS 204</td></tr>
           <tr><th>Message encryption</th><td>AES-256-GCM</td></tr>
           <tr><th>Key derivation</th><td>HKDF-SHA-256</td></tr>
-          <tr><th>Server identity</th><td>Ed25519</td></tr>
         </table>
       </section>
 
@@ -75,19 +67,13 @@
           <dd>On first login the client generates an ML-KEM-1024 keypair and an ML-DSA-87 keypair locally, then signs an attestation binding both public keys to the account and device name. The server verifies the attestation and publishes the public keys to its identity directory. Private keys are never transmitted.</dd>
 
           <dt>Message encryption</dt>
-          <dd>Each message is encrypted under a random AES-256-GCM key. That key is wrapped separately for every recipient device via ML-KEM-1024 encapsulation, and the resulting envelope is signed with the sender device's ML-DSA-87 key. A server stores and relays the ciphertext; it cannot decrypt it.</dd>
-
-          <dt>Federation</dt>
-          <dd>Accounts are addressed as <code>user@server</code>. Each conversation has one deterministic home server — the lexicographically lowest participant server for direct messages, or a fixed assignment for groups — which stores and orders that conversation. Clients read and write to a conversation's home server independent of which server hosts their own account.</dd>
-
-          <dt>Directory (registry)</dt>
-          <dd>A server announces its address to a registry with a signed, self-authenticated request; the registry verifies the announcement against the server's public identity before listing it. Clients query a configured registry on startup to resolve usernames to servers without manual server selection.</dd>
+          <dd>Each message is encrypted under a random AES-256-GCM key. That key is wrapped separately for every recipient device via ML-KEM-1024 encapsulation, and the resulting envelope is signed with the sender device's ML-DSA-87 key — the signature itself is the message's authentication, verified against that device's registered key. The server stores and relays the ciphertext; it cannot decrypt it.</dd>
 
           <dt>Authentication</dt>
-          <dd>Login requires a password and a time-limited code sent to the account's registered email address. A trusted-device token can bypass the code on a given device for 30 days.</dd>
+          <dd>Login requires a password and a time-limited code sent to the account's registered email address. A trusted-device token can bypass the code on a given device for 30 days; a session otherwise stays signed in for 7 days idle. A network failure never forces a relogin — only an actually invalid or expired session does.</dd>
 
           <dt>Consistency</dt>
-          <dd>Message order is authoritative on the home server. Clients reconcile their local view against that order on a fixed interval and mark delivery per recipient device.</dd>
+          <dd>Message order is authoritative on the server. Clients reconcile their local view against that order on a fixed interval and mark delivery per recipient device.</dd>
         </dl>
       </section>
 

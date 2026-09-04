@@ -29,19 +29,6 @@
       <div class="panel">
         <h1>pqmsg<span class="cursor">_</span></h1>
         <p class="sub">post-quantum end-to-end messaging · ML-KEM-1024 · ML-DSA-87 · AES-256-GCM</p>
-        <p id="server-auto" class="hint tight"></p>
-        <details id="server-adv">
-          <summary>advanced — choose a different home server</summary>
-          <div id="server-picker">
-            <div class="sp-head"><span>servers</span><button id="sp-refresh" class="mini" type="button">↻ refresh</button></div>
-            <div id="sp-list" class="sp-list"><span class="dim">discovering…</span></div>
-            <div class="sp-add">
-              <input id="sp-url" placeholder="paste a server URL" autocomplete="off" />
-              <button id="sp-add-btn" class="mini" type="button">add</button>
-            </div>
-          </div>
-          <label>server<input id="in-server" value="http://localhost:8787" /></label>
-        </details>
         <label>username<input id="in-user" placeholder="alice" autocomplete="off" /></label>
         <label>email<input id="in-email" type="email" placeholder="you@example.com — for login codes" autocomplete="off" /></label>
         <label>password<input id="in-pass" type="password" placeholder="••••••" /></label>
@@ -81,7 +68,7 @@
 
       <div id="newconv">
         <span class="prompt">to:</span>
-        <input id="in-to" placeholder="username or user@server" autocomplete="off" />
+        <input id="in-to" placeholder="username" autocomplete="off" />
         <button id="btn-open" class="primary sm">open</button>
         <button id="btn-group" class="ghost sm">＋ group</button>
         <span id="newconv-msg" class="msg"></span>
@@ -90,7 +77,7 @@
       <div id="groupbar" hidden>
         <span class="prompt">group:</span>
         <input id="in-gname" placeholder="group name" autocomplete="off" />
-        <input id="in-gmembers" placeholder="alice, bob@server, carol" autocomplete="off" />
+        <input id="in-gmembers" placeholder="alice, bob, carol" autocomplete="off" />
         <button id="btn-gcreate" class="primary sm">create</button>
         <button id="btn-gcancel" class="ghost sm">cancel</button>
       </div>

@@ -21,7 +21,6 @@ function detectOS() {
 
 function classify(name) {
   const n = name.toLowerCase();
-  const isServer = /server/.test(n);
   let os, label;
   if (n.endsWith('.dmg')) {
     os = 'mac';
@@ -38,7 +37,7 @@ function classify(name) {
   } else {
     return null;
   }
-  return { isServer, os, label };
+  return { os, label };
 }
 
 const ORDER = ['macOS · Apple Silicon', 'macOS · Intel', 'Windows', 'Linux · AppImage', 'Linux · .deb'];
@@ -70,15 +69,13 @@ function renderGroup(el, assets, myOS) {
     $('#version-line').textContent = rel.tag_name || '';
 
     const client = [];
-    const server = [];
     for (const a of rel.assets || []) {
       const meta = classify(a.name);
       if (!meta) continue;
       a.meta = meta;
-      (meta.isServer ? server : client).push(a);
+      client.push(a);
     }
     renderGroup($('#client-buttons'), client, myOS);
-    renderGroup($('#server-buttons'), server, myOS);
 
     const hint = {
       mac: 'Detected macOS. Apple Silicon (M1–M4): arm64 build. Intel: x64 build.',
@@ -97,6 +94,5 @@ function renderGroup(el, assets, myOS) {
         ? `No release published yet. <a href="${RELEASES}">Releases page →</a>`
         : `Could not load releases (${e.message}). <a href="${RELEASES}">Releases page →</a>`;
     $('#client-buttons').innerHTML = msg;
-    $('#server-buttons').innerHTML = `<a class="btn" href="${RELEASES}">Releases page →</a>`;
   }
 })();

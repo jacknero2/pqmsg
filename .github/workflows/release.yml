@@ -25,39 +25,14 @@ jobs:
 
       - run: npm ci
 
-      # ---- bundle the Cloudflare tunnel helper into the SERVER app ----
-      - name: Fetch cloudflared (macOS)
-        if: runner.os == 'macOS'
-        run: |
-          mkdir -p resources
-          curl -fL -o cf.tgz https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-darwin-amd64.tgz
-          tar xzf cf.tgz
-          mv cloudflared resources/cloudflared
-          chmod +x resources/cloudflared
-      - name: Fetch cloudflared (Linux)
-        if: runner.os == 'Linux'
-        run: |
-          mkdir -p resources
-          curl -fL -o resources/cloudflared https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64
-          chmod +x resources/cloudflared
-      - name: Fetch cloudflared (Windows)
-        if: runner.os == 'Windows'
-        shell: bash
-        run: |
-          mkdir -p resources
-          curl -fL -o resources/cloudflared.exe https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-windows-amd64.exe
-
       - run: npm run e2e
-      - run: npm run e2e:registry
-      - run: npm run e2e:federation
       - run: npm run e2e:2fa
+      - run: npm run e2e:network
 
       # no GH_TOKEN here on purpose — electron-builder must NOT auto-publish;
       # the single "Publish to GitHub Release" step below is the only uploader
       - name: Build client
-        run: npm run dist:client
-      - name: Build server app
-        run: npm run dist:server
+        run: npm run dist
 
       - name: Collect installers
         shell: bash

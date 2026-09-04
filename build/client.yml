@@ -1,5 +1,5 @@
-# electron-builder config — pqmsg CLIENT app
-# build:  npm run dist:client   (builds for the current OS)
+# electron-builder config — the pqmsg client app
+# build:  npm run dist   (builds for the current OS)
 appId: com.jacknero.pqmsg
 productName: pqmsg
 copyright: © 2026 jacknero2

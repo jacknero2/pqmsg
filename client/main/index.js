@@ -7,6 +7,20 @@ const PROFILE = process.env.PQMSG_PROFILE || 'default';
 let win;
 let engine;
 
+// Surface crashes to the operator's server (if we're logged in enough to know
+// one) instead of just vanishing off a friend's laptop with no trace. Doesn't
+// change crash semantics — still exits after — just reports on the way out.
+process.on('uncaughtException', (err) => {
+  console.error('[uncaught]', err);
+  if (engine) engine.reportDiagnostic('uncaughtException', err.message, { stack: err.stack });
+  setTimeout(() => process.exit(1), 250);
+});
+process.on('unhandledRejection', (reason) => {
+  const err = reason instanceof Error ? reason : new Error(String(reason));
+  console.error('[unhandledRejection]', err);
+  if (engine) engine.reportDiagnostic('unhandledRejection', err.message, { stack: err.stack });
+});
+
 // one running client per machine, except in dev where PQMSG_PROFILE lets you
 // run several (alice / bob) side by side
 if (app.isPackaged && !app.requestSingleInstanceLock()) {
@@ -80,9 +94,6 @@ app.whenReady().then(async () => {
   H('pqmsg:syncNow', () => engine.syncOnce('manual'));
   H('pqmsg:setSyncInterval', (a) => engine.setSyncInterval(a.ms));
   H('pqmsg:contact', (a) => engine.refreshContact(a.username, true));
-  H('pqmsg:discoverServers', () => engine.discoverServers());
-  H('pqmsg:pinServer', (a) => engine.pinServer(a));
-  H('pqmsg:unpinServer', (a) => engine.unpinServer(a.url));
   H('pqmsg:openExternal', (a) => {
     if (/^https?:\/\//.test(a.url || '')) shell.openExternal(a.url);
   });

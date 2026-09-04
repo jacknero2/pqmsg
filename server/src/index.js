@@ -1,6 +1,7 @@
 'use strict';
 /*
- * pqmsg server
+ * pqmsg server — a single, self-contained chat server (no federation, no
+ * registry: every account lives here).
  * ------------
  *  - IDS  : per-account device public keys (ML-KEM-1024 + ML-DSA-87)
  *  - Store : encrypted conversation folders, one per conversation, messages
@@ -19,24 +20,20 @@ const crypto = require('crypto');
 const { config } = require('./config');
 const { Presence } = require('./presence');
 const { createStore } = require('../../shared/store');
-const { RegistryAnnouncer, loadServerIdentity } = require('./registry-client');
-const fed = require('./federation');
-const master = require('./master');
 const proto = require('../../shared/protocol');
 const pqc = require('../../shared/crypto');
 const { createMailer, maskEmail } = require('../../shared/email');
 const { ChallengeStore, issueTrust, checkTrust } = require('../../shared/twofa');
-const crypto2 = require('crypto');
+const diagnostics = require('../../shared/diagnostics');
 const PKG_VERSION = require('../../package.json').version;
 
-const handleHash = (h) => crypto2.createHash('sha256').update(pqc.normHandle(h)).digest('hex').slice(0, 32);
 const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 
 const app = express();
 app.use(express.json({ limit: '4mb' }));
 app.use((req, res, next) => {
   res.set('Access-Control-Allow-Origin', '*');
-  res.set('Access-Control-Allow-Headers', 'Content-Type, Authorization, X-Admin-Token, X-Master-Token, X-PQMSG-Auth');
+  res.set('Access-Control-Allow-Headers', 'Content-Type, Authorization, X-Admin-Token, X-PQMSG-Auth');
   res.set('Access-Control-Allow-Methods', 'GET, POST, DELETE, OPTIONS');
   if (req.method === 'OPTIONS') return res.sendStatus(204);
   next();
@@ -45,8 +42,6 @@ app.use((req, res, next) => {
 const presence = new Presence();
 let store;
 let SECRETS;
-let serverIdentity = null; // Ed25519 registry identity (for /api/serverinfo + announcing)
-let announcer = null;
 let mailer = createMailer({}); // replaced with configured transport at boot
 const challenges = new ChallengeStore();
 /** surfaced 2FA codes when email isn't configured (dev mode) — id -> {code, at} */
@@ -67,9 +62,41 @@ async function sendCode({ id, code, to, subject }) {
   return { dev: true, devCode: code };
 }
 
+/** Best-effort error report — never throws, no-ops unless the operator opted in. */
+function reportDiag({ component, kind, message, stack, context }) {
+  if (!config.sendDiagnostics || !config.diagToken || !config.diagRepo) return;
+  diagnostics
+    .reportIssue({ token: config.diagToken, repo: config.diagRepo, component, kind, message, stack, context })
+    .catch(() => {});
+}
+const _diagBucket = new Map(); // ip -> { count, resetAt }
+function diagRateLimited(ip) {
+  const now = Date.now();
+  const b = _diagBucket.get(ip);
+  if (!b || now > b.resetAt) {
+    _diagBucket.set(ip, { count: 1, resetAt: now + 60_000 });
+    if (_diagBucket.size > 5000) _diagBucket.delete(_diagBucket.keys().next().value);
+    return false;
+  }
+  b.count++;
+  return b.count > 10; // max 10 reports/min per source IP
+}
+
 // --------------------------------------------------------------------------
 // helpers
 // --------------------------------------------------------------------------
+/** Every account's handle is username@<this server> — there is only one server. */
+function myHandle(username) {
+  return pqc.formatHandle({ username, server: config.serverPublicUrl });
+}
+/** Local-only IDS lookup (no other servers exist to ask). */
+async function resolveIds(handleStr) {
+  const { username } = pqc.parseHandle(handleStr);
+  const ids = await store.getIds(username);
+  if (!ids) return null;
+  return { ...ids, safetyNumber: pqc.safetyNumber((ids.devices || []).map((d) => d.sigPublicKey)) };
+}
+
 function auth(req, res, next) {
   const h = req.get('authorization') || '';
   const tok = h.startsWith('Bearer ') ? h.slice(7) : null;
@@ -107,12 +134,12 @@ function convIdOk(convId, kind, handles) {
 }
 
 /**
- * Resolve who is calling.
- *  - `X-PQMSG-Auth: <b64 JSON {handle, deviceId, ts, sig}>` — ML-DSA over a
- *    canonical challenge, verified against that handle's IDS (federated). Works
- *    for callers with no account here.
- *  - `Authorization: Bearer <token>` — a local account.
- * Sets req.actor = { handle, deviceId|null, local } or leaves it null.
+ * Resolve who is calling, by ML-DSA device signature — proves possession of a
+ * specific enrolled device's secret key, which a bearer token alone does not.
+ *   `X-PQMSG-Auth: <b64 JSON {handle, deviceId, ts, sig}>`
+ *   `Authorization: Bearer <token>` — falls back to account-level auth (no
+ *   device binding) if no signed header is present.
+ * Sets req.actor = { handle, deviceId|null } or leaves it null.
  */
 async function authActor(req, res, next) {
   try {
@@ -126,19 +153,18 @@ async function authActor(req, res, next) {
       }
       if (!a.handle || !a.deviceId || typeof a.ts !== 'number' || !a.sig) return res.status(400).json({ error: 'bad_auth_header' });
       if (Math.abs(Date.now() - a.ts) > 300000) return res.status(401).json({ error: 'stale_auth' });
-      const ids = await fed.resolveIds(a.handle, { config, store, req });
+      const ids = await resolveIds(a.handle);
       const dev = ids && (ids.devices || []).find((d) => d.deviceId === a.deviceId);
       const challenge = { m: 'pqmsg-auth', method: req.method, path: req.path, convId: req.params.convId || null, deviceId: a.deviceId, ts: a.ts };
       if (!dev || !pqc.verifyRequest(challenge, a.sig, dev.sigPublicKey)) return res.status(401).json({ error: 'bad_auth_sig' });
-      req.actor = { handle: pqc.normHandle(a.handle), deviceId: a.deviceId, local: fed.isSelf(pqc.parseHandle(a.handle).server, config, req) };
+      req.actor = { handle: pqc.normHandle(a.handle), deviceId: a.deviceId };
       return next();
     }
     const h = req.get('authorization') || '';
     const tok = h.startsWith('Bearer ') ? h.slice(7) : null;
     const claims = tok && proto.verifyToken(SECRETS.tokenSecret, tok);
     if (claims) {
-      const origin = fed.reqOrigin(req) || config.serverPublicUrl || `http://localhost:${config.port}`;
-      req.actor = { handle: pqc.formatHandle({ username: claims.username, server: origin }), deviceId: null, local: true };
+      req.actor = { handle: myHandle(claims.username), deviceId: null };
       return next();
     }
     req.actor = null;
@@ -240,8 +266,7 @@ app.get(
   })
 );
 
-// public: the IDS is device *public* keys + a safety number, and federated
-// peers/clients must be able to read it without an account here
+// public: the IDS is device *public* keys + a safety number
 app.get(
   '/api/ids/:username',
   wrap(async (req, res) => {
@@ -255,11 +280,10 @@ app.get(
 // --------------------------------------------------------------------------
 // messaging
 // --------------------------------------------------------------------------
-/** wake the WS sockets of participants whose account lives on THIS server */
 function wakeLocal(handles, convId, latestSeq) {
-  const local = new Set(handles.filter((h) => fed.isSelf(pqc.parseHandle(h).server, config)).map((h) => pqc.parseHandle(h).username));
+  const usernames = new Set(handles.map((h) => pqc.parseHandle(h).username));
   for (const { ws, username } of liveClients.values()) {
-    if (local.has(username) && ws.readyState === 1) {
+    if (usernames.has(username) && ws.readyState === 1) {
       ws.send(JSON.stringify({ type: 'wake', convId, latestSeq, serverTime: Date.now() }));
     }
   }
@@ -268,8 +292,9 @@ function wakeLocal(handles, convId, latestSeq) {
 app.post(
   '/api/conv/:convId/messages',
   wrap(async (req, res) => {
-    // Auth here is the envelope signature itself — no local account/token needed,
-    // so a client whose home server is elsewhere can post to this conversation.
+    // No bearer token here on purpose: the ML-DSA envelope signature IS the
+    // authentication, verified below against the sender device's registered
+    // key — stronger than a bearer token (non-repudiable, per-device, per-message).
     const { envelope, participants, kind, name } = req.body;
     if (!envelope || !Array.isArray(participants) || participants.length < 2) {
       throw Object.assign(new Error('need envelope + participants[]'), { status: 400 });
@@ -278,7 +303,7 @@ app.post(
     try {
       parts = participants.map(pqc.normHandle);
     } catch {
-      throw Object.assign(new Error('participants must be user@server handles'), { status: 400 });
+      throw Object.assign(new Error('bad participants'), { status: 400 });
     }
     const convId = req.params.convId;
     const isGroup = kind === 'group' || parts.length > 2;
@@ -289,19 +314,13 @@ app.post(
     if (!convIdOk(convId, kind, parts)) {
       throw Object.assign(new Error('convId does not match the conversation'), { status: 400 });
     }
-    const home = pqc.homeServer(parts);
-    if (!fed.isSelf(home, config, req)) {
-      return res.status(421).json({ error: 'misdirected', homeServer: home });
-    }
     // for an existing group, the sender must be a current member (membership is mutable)
     const existing = await store.getConversationMeta(convId);
     if (isGroup && existing && !(existing.participants || []).map(pqc.normHandle).includes(pqc.normHandle(envelope.sender))) {
       throw Object.assign(new Error('not a member of this group'), { status: 403 });
     }
 
-    // authenticate the envelope against the sender device's signing key (resolved
-    // from the sender's own server if they are not local)
-    const senderIds = await fed.resolveIds(envelope.sender, { config, store, req });
+    const senderIds = await resolveIds(envelope.sender);
     const dev = senderIds && (senderIds.devices || []).find((d) => d.deviceId === envelope.senderDevice);
     if (!dev) throw Object.assign(new Error('unknown sender device'), { status: 400 });
     if (!pqc.verifyEnvelope(envelope, dev.sigPublicKey)) {
@@ -312,14 +331,10 @@ app.post(
       kind: isGroup ? 'group' : 'dm',
       participants: existing ? existing.participants : parts,
       name: name || (existing && existing.name) || null,
-      homeServer: home,
     });
     const stored = await store.appendMessage(convId, envelope);
     presence.log('message', { convId, msgId: stored.msgId, sender: stored.sender, serverSeq: stored.serverSeq, recipients: stored.recipients.length });
     wakeLocal(meta.participants || parts, convId, stored.serverSeq);
-    if (meta.created || stored.serverSeq <= 2) {
-      fed.notifyParticipantServers({ participants: meta.participants || parts, convId, homeServer: home, kind: isGroup ? 'group' : 'dm', name: meta.name, config, req });
-    }
     res.json({ stored });
   })
 );
@@ -333,9 +348,6 @@ app.post(
     const meta = await store.getConversationMeta(req.params.convId);
     if (!meta) throw Object.assign(new Error('no such conversation'), { status: 404 });
     if (meta.kind !== 'group') throw Object.assign(new Error('not a group'), { status: 400 });
-    if (!fed.isSelf(meta.homeServer || pqc.homeServer(meta.participants), config, req)) {
-      return res.status(421).json({ error: 'misdirected', homeServer: meta.homeServer });
-    }
     if (!(meta.participants || []).map(pqc.normHandle).includes(req.actor.handle)) {
       throw Object.assign(new Error('only a member can change membership'), { status: 403 });
     }
@@ -349,7 +361,6 @@ app.post(
     const updated = await store.setConversationParticipants(req.params.convId, next, req.body.name);
     presence.log('members', { convId: req.params.convId, by: req.actor.handle, count: next.length });
     wakeLocal(next, req.params.convId, (await store.getOrder(req.params.convId)).length);
-    fed.notifyParticipantServers({ participants: next, convId: req.params.convId, homeServer: meta.homeServer, kind: 'group', name: updated.name, config, req });
     res.json({ ok: true, participants: next });
   })
 );
@@ -358,9 +369,6 @@ async function participantGuard(req, res, next) {
   try {
     const meta = await store.getConversationMeta(req.params.convId);
     if (!meta) return res.status(404).json({ error: 'no such conversation' });
-    if (!fed.isSelf(meta.homeServer || pqc.homeServer(meta.participants), config, req)) {
-      return res.status(421).json({ error: 'misdirected', homeServer: meta.homeServer });
-    }
     if (!req.actor || !(meta.participants || []).map(pqc.normHandle).includes(req.actor.handle)) {
       return res.status(403).json({ error: 'not a participant' });
     }
@@ -415,51 +423,19 @@ app.post(
   })
 );
 
-/** server-to-server: a remote home server tells us one of our users is in a conversation there */
-app.post(
-  '/api/federated/notify',
-  wrap(async (req, res) => {
-    const { convId, participants, homeServer, kind, name } = req.body || {};
-    let parts;
-    try {
-      parts = (participants || []).map(pqc.normHandle);
-    } catch {
-      throw Object.assign(new Error('bad participants'), { status: 400 });
-    }
-    if (!convId || !homeServer || parts.length < 2) throw Object.assign(new Error('bad notify'), { status: 400 });
-    // the claimed home must actually be the deterministic home for these members
-    if (kind !== 'group' && pqc.normServer(homeServer) !== pqc.homeServer(parts)) {
-      throw Object.assign(new Error('home server does not match participants'), { status: 400 });
-    }
-    if (fed.isSelf(homeServer, config, req)) return res.json({ ok: true, ignored: 'self' }); // we are the home
-    let added = 0;
-    for (const p of parts) {
-      if (fed.isSelf(pqc.parseHandle(p).server, config, req)) {
-        await store.addPointer(handleHash(p), { convId, homeServer: pqc.normServer(homeServer), participants: parts, kind: kind || 'dm', name: name || null });
-        added++;
-      }
-    }
-    res.json({ ok: true, added });
-  })
-);
-
 app.get(
   '/api/inbox',
   authActor,
   requireActor,
   wrap(async (req, res) => {
     const me = req.actor.handle;
-    const local = (await store.listConversations())
+    const conversations = (await store.listConversations())
       .filter((c) => (c.participants || []).map(pqc.normHandle).includes(me))
-      .map((c) => ({ convId: c.convId, participants: c.participants, kind: c.kind, name: c.name || null, homeServer: c.homeServer || fed.reqOrigin(req), local: true }));
-    const seen = new Set(local.map((c) => c.convId));
-    const pointers = (await store.listPointers(handleHash(me)))
-      .filter((p) => !seen.has(p.convId))
-      .map((p) => ({ convId: p.convId, participants: p.participants, kind: p.kind, name: p.name || null, homeServer: p.homeServer, local: false }));
-    const conversations = await Promise.all(
-      local.map(async (c) => ({ ...c, latestSeq: (await store.getOrder(c.convId)).length }))
+      .map((c) => ({ convId: c.convId, participants: c.participants, kind: c.kind, name: c.name || null }));
+    const withCounts = await Promise.all(
+      conversations.map(async (c) => ({ ...c, latestSeq: (await store.getOrder(c.convId)).length }))
     );
-    res.json({ conversations: [...conversations, ...pointers], serverTime: Date.now() });
+    res.json({ conversations: withCounts, serverTime: Date.now() });
   })
 );
 
@@ -534,18 +510,31 @@ app.get('/api/admin/conv/:convId/raw/:msgId', admin, wrap(async (req, res) => {
 
 app.get('/api/health', (req, res) => res.json({ ok: true, backend: store.kind, time: Date.now() }));
 
-// public, unauthenticated — used by the registry's callback check, by clients to
-// label a server before signing in, and to carry the client-version gate
+// Public, unauthenticated: clients best-effort report their own errors here so
+// the operator can see field problems without asking every user for logs. Size-
+// capped and rate-limited per IP; relayed to GitHub only if the operator opted in
+// (see reportDiag / config.sendDiagnostics) — otherwise it's just an activity-log line.
+app.post('/api/diagnostics', (req, res) => {
+  const ip = req.ip || (req.socket && req.socket.remoteAddress) || 'unknown';
+  if (diagRateLimited(ip)) return res.status(429).json({ error: 'rate limited' });
+  const b = req.body || {};
+  const kind = String(b.kind || 'error').slice(0, 60);
+  const message = String(b.message || '').slice(0, 500);
+  if (!message && !b.kind) return res.status(400).json({ error: 'kind or message required' });
+  const stack = typeof b.stack === 'string' ? b.stack.slice(0, 3000) : undefined;
+  const context = b.context && typeof b.context === 'object' ? b.context : undefined;
+  presence.log('diagnostic', { kind, message: message.slice(0, 200) });
+  reportDiag({ component: 'client', kind, message, stack, context });
+  res.json({ ok: true });
+});
+
+// public, unauthenticated — clients use this to label the server before signing
+// in, and to carry the client-version gate
 app.get('/api/serverinfo', (req, res) =>
   res.json({
     name: config.serverName || null,
     description: config.serverDescription || null,
-    region: config.serverRegion || null,
-    publicId: serverIdentity ? serverIdentity.publicId : null,
     publicUrl: config.serverPublicUrl || null,
-    federation: true,
-    isRegistry: !!(masterState && masterState.registryEnabled),
-    registryPath: masterState && masterState.registryEnabled ? '/registry' : null,
     serverVersion: PKG_VERSION,
     backend: store ? store.kind : null,
     clients: presence.list().length,
@@ -555,143 +544,6 @@ app.get('/api/serverinfo', (req, res) =>
     time: Date.now(),
   })
 );
-
-// --------------------------------------------------------------------------
-// master registry: this server can also BE the directory
-// --------------------------------------------------------------------------
-let masterState = null; // Master instance
-let registryMounted = null; // { app, entries, owners } from buildRegistryApp
-
-function mountRegistry() {
-  if (registryMounted) return true;
-  try {
-    const { buildRegistryApp } = require('../../registry');
-    registryMounted = buildRegistryApp({
-      dataDir: path.join(config.dataDir, 'registry'),
-      allowInsecure: config.fedAllowInsecure,
-      trustAllUrls: config.fedTrustAll,
-      quiet: true,
-    });
-    app.use('/registry', registryMounted.app);
-    presence.log('registry-mounted', { at: '/registry' });
-    return true;
-  } catch (e) {
-    // never let a registry problem take down the whole server
-    console.error('registry mount failed:', e.message);
-    presence.log('registry-mount-failed', { error: e.message });
-    return false;
-  }
-}
-
-const requireMaster = (req, res, next) => {
-  const tok = req.get('x-master-token') || req.query.master;
-  const b = tok && proto.verifyToken(SECRETS.masterSecret, tok);
-  if (!b || b.t !== 'master') return res.status(403).json({ error: 'master auth required' });
-  next();
-};
-
-app.get('/api/master/status', wrap(async (req, res) => res.json(masterState.status())));
-
-app.post(
-  '/api/master/setup',
-  wrap(async (req, res) => {
-    if (masterState.hasPassword) throw Object.assign(new Error('master password already set — use /login'), { status: 409 });
-    const password = String(req.body.password || '');
-    if (password.length < 8) throw Object.assign(new Error('master password must be >= 8 chars'), { status: 400 });
-    masterState.setPassword(password);
-    const { id, code } = challenges.create('master', masterState.email, {});
-    const surf = await sendCode({ id, code, to: masterState.email, subject: 'pqmsg master registry — verify' });
-    presence.log('master-setup', { email: maskEmail(masterState.email), dev: surf.dev });
-    res.json({ needs2fa: true, challengeId: id, email: maskEmail(masterState.email), ...surf });
-  })
-);
-
-app.post(
-  '/api/master/login',
-  wrap(async (req, res) => {
-    if (!masterState.hasPassword) throw Object.assign(new Error('no master password set — use /setup'), { status: 409 });
-    if (!masterState.verifyPassword(String(req.body.password || ''))) {
-      throw Object.assign(new Error('invalid master password'), { status: 401 });
-    }
-    const { id, code } = challenges.create('master', masterState.email, {});
-    const surf = await sendCode({ id, code, to: masterState.email, subject: 'pqmsg master registry — login code' });
-    res.json({ needs2fa: true, challengeId: id, email: maskEmail(masterState.email), ...surf });
-  })
-);
-
-app.post(
-  '/api/master/verify',
-  wrap(async (req, res) => {
-    const r = challenges.verify(String(req.body.challengeId || ''), String(req.body.code || ''));
-    if (!r.ok) {
-      const status = r.error === 'bad_code' ? 401 : r.error === 'too_many_attempts' ? 429 : 400;
-      throw Object.assign(new Error(r.error), { status });
-    }
-    const mounted = mountRegistry();
-    masterState.setRegistryEnabled(mounted);
-    const masterToken = proto.issueToken(SECRETS.masterSecret, { t: 'master' }, 24 * 3600 * 1000);
-    presence.log('master-login', { registryMounted: mounted });
-    res.json({
-      masterToken,
-      registryEnabled: mounted,
-      error: mounted ? undefined : 'registry module unavailable in this build',
-      registryUrl: (config.serverPublicUrl || '') + '/registry',
-    });
-  })
-);
-
-// forgot master password -> emailed reset code -> new password
-app.post(
-  '/api/master/reset',
-  wrap(async (req, res) => {
-    if (!masterState.hasPassword) throw Object.assign(new Error('no master password set — use /setup'), { status: 409 });
-    const { id, code } = challenges.create('master-reset', masterState.email, {});
-    const surf = await sendCode({ id, code, to: masterState.email, subject: 'pqmsg master registry — password reset' });
-    presence.log('master-reset-request', { email: maskEmail(masterState.email), dev: surf.dev });
-    res.json({ needs2fa: true, challengeId: id, email: maskEmail(masterState.email), ...surf });
-  })
-);
-app.post(
-  '/api/master/reset/verify',
-  wrap(async (req, res) => {
-    const newPassword = String(req.body.newPassword || '');
-    if (newPassword.length < 8) throw Object.assign(new Error('new password must be >= 8 chars'), { status: 400 });
-    const r = challenges.verify(String(req.body.challengeId || ''), String(req.body.code || ''));
-    if (!r.ok) {
-      const status = r.error === 'bad_code' ? 401 : r.error === 'too_many_attempts' ? 429 : 400;
-      throw Object.assign(new Error(r.error), { status });
-    }
-    masterState.setPassword(newPassword);
-    presence.log('master-reset-done', {});
-    res.json({ ok: true });
-  })
-);
-
-app.post('/api/master/registry/disable', requireMaster, wrap(async (req, res) => {
-  masterState.setRegistryEnabled(false);
-  res.json({ ok: true, registryEnabled: false });
-}));
-app.post('/api/master/registry/enable', requireMaster, wrap(async (req, res) => {
-  masterState.setRegistryEnabled(true);
-  mountRegistry();
-  res.json({ ok: true, registryEnabled: true });
-}));
-app.get('/api/master/registry/entries', requireMaster, wrap(async (req, res) => {
-  const list = registryMounted ? [...registryMounted.entries.values()].map((e) => ({
-    name: e.name, url: e.url, publicId: e.publicId, verified: !!e.verified, lastSeen: e.lastSeen, lastVerifyErr: e.lastVerifyErr || null,
-  })) : [];
-  res.json({ registryEnabled: masterState.registryEnabled, entries: list });
-}));
-app.post('/api/master/registry/remove', requireMaster, wrap(async (req, res) => {
-  const pid = String(req.body.publicId || '');
-  if (registryMounted && registryMounted.entries.has(pid)) {
-    const e = registryMounted.entries.get(pid);
-    registryMounted.entries.delete(pid);
-    registryMounted.owners.delete(e.name.toLowerCase());
-    registryMounted.save();
-  }
-  res.json({ ok: true });
-}));
 
 app.use('/', express.static(path.join(__dirname, '..', 'public')));
 
@@ -785,8 +637,6 @@ async function startServer(overrides = {}) {
   const adminToken = config.adminToken || SECRETS.adminToken;
 
   mailer = createMailer(config);
-  masterState = new master.Master(config.dataDir, config.masterEmail);
-  if (masterState.registryEnabled) mountRegistry(); // survives restarts
 
   await new Promise((resolve, reject) => {
     const onErr = (e) => reject(e);
@@ -798,21 +648,6 @@ async function startServer(overrides = {}) {
   });
   started = true;
   const url = `http://localhost:${config.port}`;
-
-  // Ed25519 registry identity — always loaded so /api/serverinfo can report publicId
-  try {
-    serverIdentity = loadServerIdentity(config.dataDir);
-  } catch (e) {
-    console.error('registry identity load failed:', e.message);
-  }
-  if (config.announce && config.registryUrl && config.serverName && config.serverPublicUrl) {
-    startAnnouncing({
-      name: config.serverName,
-      description: config.serverDescription,
-      region: config.serverRegion,
-      url: config.serverPublicUrl,
-    });
-  }
 
   if (!config.quiet) {
     console.log('┌───────────────────────────────────────────────');
@@ -836,62 +671,47 @@ async function startServer(overrides = {}) {
     adminToken,
     dataDir: config.dataDir,
     backend: store.kind,
-    registryIdentity: serverIdentity,
-    getAnnouncer: () => announcer,
-    startAnnouncing,
-    stopAnnouncing,
-    setServerInfo,
     mailerMode: () => mailer.mode,
-    masterStatus: () => masterState.status(),
-    registryEntryCount: () => (registryMounted ? registryMounted.entries.size : 0),
+    setServerInfo,
     close: async () => {
-      await stopAnnouncing();
       await new Promise((r) => server.close(r));
     },
   };
 }
 
-/** Begin (or update + resume) announcing this server to the configured registry. */
-function startAnnouncing(info) {
-  const registryUrl = info.registryUrl || config.registryUrl;
-  if (!registryUrl) throw new Error('no registry URL (set PQMSG_REGISTRY_URL)');
-  config.registryUrl = registryUrl;
-  if (!announcer) {
-    announcer = new RegistryAnnouncer({ registryUrl, dataDir: config.dataDir, info });
-  } else {
-    announcer.setInfo({ ...info, registryUrl }); // pick up a changed registry URL
-  }
-  announcer.start();
-  return announcer;
-}
-function stopAnnouncing() {
-  return announcer ? announcer.stop() : Promise.resolve();
-}
-/** Live-update the name/description/URL reported at /api/serverinfo and (if active) re-announced. */
+/** Live-update the name/description/URL reported at /api/serverinfo. */
 function setServerInfo(patch = {}) {
   if (patch.name !== undefined) config.serverName = patch.name;
   if (patch.description !== undefined) config.serverDescription = patch.description;
-  if (patch.region !== undefined) config.serverRegion = patch.region;
   if (patch.url !== undefined) config.serverPublicUrl = patch.url;
   if (patch.minClient !== undefined) config.minClient = patch.minClient;
   if (patch.latestClient !== undefined) config.latestClient = patch.latestClient;
+  if (patch.sendDiagnostics !== undefined) config.sendDiagnostics = patch.sendDiagnostics;
+  if (patch.diagToken !== undefined) config.diagToken = patch.diagToken;
+  if (patch.diagRepo !== undefined) config.diagRepo = patch.diagRepo;
   if (['smtpHost', 'smtpPort', 'smtpUser', 'smtpPass', 'smtpFrom', 'smtpSecure'].some((k) => patch[k] !== undefined)) {
     for (const k of ['smtpHost', 'smtpPort', 'smtpUser', 'smtpPass', 'smtpFrom', 'smtpSecure']) {
       if (patch[k] !== undefined) config[k] = patch[k];
     }
     mailer = createMailer(config);
   }
-  if (announcer) {
-    announcer.setInfo({
-      name: config.serverName,
-      description: config.serverDescription,
-      region: config.serverRegion,
-      url: config.serverPublicUrl,
-    });
-  }
 }
 
-module.exports = { startServer, startAnnouncing, stopAnnouncing, setServerInfo, app, config };
+// Surface crashes (locally, and to GitHub if the operator opted in) instead of
+// failing silently. uncaughtException still exits afterward — same fatal
+// semantics as Node's default, just with a report on the way out.
+process.on('uncaughtException', (err) => {
+  console.error('[uncaught]', err);
+  reportDiag({ component: 'server', kind: 'uncaughtException', message: err.message, stack: err.stack });
+  setTimeout(() => process.exit(1), 250);
+});
+process.on('unhandledRejection', (reason) => {
+  const err = reason instanceof Error ? reason : new Error(String(reason));
+  console.error('[unhandledRejection]', err);
+  reportDiag({ component: 'server', kind: 'unhandledRejection', message: err.message, stack: err.stack });
+});
+
+module.exports = { startServer, setServerInfo, app, config, reportDiag };
 
 if (require.main === module) {
   startServer().catch((e) => {

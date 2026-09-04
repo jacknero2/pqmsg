@@ -24,6 +24,9 @@ const pqc = require('../../shared/crypto');
 
 const norm = (u) => String(u || '').trim().toLowerCase();
 const TRAILING_WINDOW = 30; // messages re-checked each cycle for order + delivery
+// The one pqmsg server. Overridable via env for local dev/testing only — there
+// is no server picker in the UI, and no other server is ever contacted.
+const SERVER_URL = process.env.PQMSG_SERVER_URL || 'https://chat.jacknero.com';
 
 class Engine extends EventEmitter {
   constructor(profile, baseDir, appVersion) {
@@ -43,9 +46,7 @@ class Engine extends EventEmitter {
     this.lastSyncAt = 0;
     this.lastSyncError = null;
     this.log = [];
-    // server discovery + version gate
-    this.servers = this.store.loadServerCache();
-    this.registryUrl = '';
+    // version gate
     this.updateGate = null; // { required, current, downloadUrl, source } -> hard block
     this.updateInfo = null; // { latest, downloadUrl }                   -> soft banner
     this._versionFloor = null;
@@ -122,7 +123,7 @@ class Engine extends EventEmitter {
       username: this.identity?.username || null,
       deviceName: this.identity?.deviceName || null,
       deviceId: this.identity?.deviceId || null,
-      serverUrl: this.identity?.serverUrl || process.env.PQMSG_SERVER || 'http://localhost:8787',
+      serverUrl: this.identity?.serverUrl || SERVER_URL,
       safetyNumber: this.identity ? pqc.safetyNumber([this.identity.sigPublicKey]) : null,
       connected: this.connected,
       syncing: this.syncing,
@@ -132,64 +133,16 @@ class Engine extends EventEmitter {
       conversations: this.listConversationsView(),
       log: this.log.slice(-60),
       appVersion: this.appVersion,
-      servers: this.servers,
-      registryUrl: this.registryUrl,
-      registryHost: this.registryHost,
-      accountServer: this.accountServer,
       updateGate: this.updateGate,
       updateInfo: this.updateInfo,
     };
   }
 
-  // -- server discovery + version gate --------------------------------
-  async discoverServers() {
-    const cfg = this.store.loadAppConfig();
-    const { registryUrl, registryHost, servers, accountServer } = await disc.discover({
-      registryUrl: cfg.registryUrl || process.env.PQMSG_REGISTRY_URL,
-      pinned: this.store.loadPinnedServers(),
-    });
-    this.registryUrl = registryUrl;
-    this.registryHost = registryHost;
-    this.accountServer = accountServer;
-    // probe all in parallel for liveness / name / version reqs
-    const probed = await Promise.all(
-      servers.map(async (s) => ({ ...s, ...(await disc.probe(s.url)) }))
-    );
-    probed.sort((a, b) => (b.online ? 1 : 0) - (a.online ? 1 : 0) || (a.latencyMs || 9e9) - (b.latencyMs || 9e9));
-    this.servers = probed;
-    this.store.saveServerCache(probed);
-    await this.checkVersion(); // a probe may raise the global picture
-    this.emit('update');
-    return probed;
-  }
-
-  /** every server we might look someone up on */
-  _knownServerUrls() {
-    const s = new Set();
-    if (this.identity && this.identity.serverUrl) s.add(pqc.normServer(this.identity.serverUrl));
-    (this.servers || []).forEach((sv) => sv.url && s.add(pqc.normServer(sv.url)));
-    this.store.loadPinnedServers().forEach((p) => p.url && s.add(pqc.normServer(p.url)));
-    return [...s];
-  }
-
-  pinServer({ name, url }) {
-    url = String(url || '').replace(/\/+$/, '');
-    if (!/^https?:\/\//.test(url)) throw new Error('enter a full http(s):// URL');
-    const list = this.store.loadPinnedServers().filter((s) => s.url !== url);
-    list.push({ name: name || url, url });
-    this.store.savePinnedServers(list);
-    return this.discoverServers();
-  }
-  unpinServer(url) {
-    this.store.savePinnedServers(this.store.loadPinnedServers().filter((s) => s.url !== url));
-    return this.discoverServers();
-  }
-
-  /** Recompute the update gate from the global floor + (optionally) a server's serverinfo. */
+  /** Recompute the update gate from the global floor + this server's serverinfo. */
   async checkVersion(serverInfo) {
     if (!this._versionFloor) this._versionFloor = (await disc.getVersionFloor()) || {};
-    if (!serverInfo && this.identity?.serverUrl) {
-      serverInfo = await disc.probe(this.identity.serverUrl).catch(() => null);
+    if (!serverInfo) {
+      serverInfo = await disc.probe(this.identity?.serverUrl || SERVER_URL).catch(() => null);
     }
     const { gate, update } = disc.versionVerdict(this.appVersion, this._versionFloor, serverInfo);
     const changed = JSON.stringify([gate, update]) !== JSON.stringify([this.updateGate, this.updateInfo]);
@@ -201,8 +154,8 @@ class Engine extends EventEmitter {
   }
 
   // -- account lifecycle -------------------------------------------------
-  async register({ serverUrl, username, password, email }) {
-    const api = new Api(serverUrl);
+  async register({ username, password, email }) {
+    const api = new Api(SERVER_URL);
     await api.register(norm(username), password, String(email || '').trim().toLowerCase());
     this.event('register', { username: norm(username) });
     return { ok: true };
@@ -217,7 +170,8 @@ class Engine extends EventEmitter {
    *   { needs2fa: true, challengeId, email, dev, devCode? }  -> call completeLogin
    *   { ok: true, deviceId }                                  -> trusted device, done
    */
-  async login({ serverUrl, username, password, deviceName }) {
+  async login({ username, password, deviceName }) {
+    const serverUrl = SERVER_URL;
     username = norm(username);
     const info = await disc.probe(serverUrl).catch(() => null);
     const gate = await this.checkVersion(info || undefined);
@@ -300,16 +254,58 @@ class Engine extends EventEmitter {
     this._verTimer.unref && this._verTimer.unref();
     if (!this.identity) return;
     this.api = new Api(this.identity.serverUrl, this.identity.token);
+    this.offline = false;
+    await this._tryResume(0);
+  }
+
+  /**
+   * A saved session should survive network trouble, not just outlive its own
+   * TTL — a DNS blip or a dead tunnel URL is not the same thing as "your login
+   * expired," and treating them the same used to force a full password + 2FA
+   * relogin on every transient failure. Only a real 401/403 means the token
+   * itself is invalid; anything else (fetch failure, 5xx, timeout) keeps the
+   * existing session and retries with backoff instead.
+   */
+  async _tryResume(attempt) {
     try {
       await this.api.myDevices(); // validates token
       this.needsLogin = false;
+      this.offline = false;
+      if (this._resumeRetryTimer) clearTimeout(this._resumeRetryTimer);
+      this._resumeRetryTimer = null;
       this.startLoops();
       this.connectWs();
       this.syncOnce('resume').catch(() => {});
     } catch (e) {
-      this.needsLogin = true;
-      this.event('token-expired', { error: e.message });
+      const authFailure = e.status === 401 || e.status === 403;
+      if (authFailure) {
+        this.needsLogin = true;
+        this.offline = false;
+        this.event('token-expired', { error: e.message });
+        return;
+      }
+      this.needsLogin = false;
+      this.offline = true;
+      this.reportDiagnostic('resume-offline', e.message, { attempt, status: e.status ?? null });
+      this.event('offline', { error: e.message, attempt });
+      const delay = Math.min(30_000, 1000 * 2 ** attempt) + Math.random() * 500;
+      this._resumeRetryTimer = setTimeout(() => this._tryResume(attempt + 1), delay);
+      this._resumeRetryTimer.unref && this._resumeRetryTimer.unref();
     }
+  }
+
+  /** Best-effort error report to our own server (never blocks, never throws). */
+  reportDiagnostic(kind, message, context) {
+    if (!this.api || !this.api.base) return;
+    fetch(this.api.base + '/api/diagnostics', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        kind,
+        message: String(message || '').slice(0, 500),
+        context: { appVersion: this.appVersion, platform: process.platform, ...(context || {}) },
+      }),
+    }).catch(() => {});
   }
 
   logout() {
@@ -378,11 +374,16 @@ class Engine extends EventEmitter {
     ws.on('error', () => {}); // 'close' handles retry
   }
 
-  // -- contacts / IDS (federated: resolve against the handle's own server) --
-  /** @param {string} handleInput  "bob" (=> bob@myserver) or "bob@server" */
+  // -- contacts / IDS --------------------------------------------------
+  /**
+   * Normalize any input to username@<our one server>. There is only one
+   * server, so any "@..." the caller typed is ignored rather than trusted —
+   * this account never contacts anywhere else.
+   */
   _asHandle(handleInput) {
     const s = String(handleInput || '').trim();
-    return pqc.normHandle(s.includes('@') ? s : `${s}@${this.identity.serverUrl}`);
+    const username = s.includes('@') ? s.slice(0, s.indexOf('@')) : s;
+    return pqc.normHandle(`${username}@${this.identity ? this.identity.serverUrl : SERVER_URL}`);
   }
   async refreshContact(handleInput, force = false) {
     const handle = this._asHandle(handleInput);
@@ -403,34 +404,9 @@ class Engine extends EventEmitter {
     return this.store.getContact(handle);
   }
 
-  /**
-   * @param {string} input  a bare "bob" (searched across every known server) or
-   *                         an explicit "bob@server"
-   */
+  /** @param {string} input  a username — the server is always this account's own */
   async startConversation(input) {
-    const raw = String(input || '').trim();
-    let other;
-    if (raw.includes('@')) {
-      other = this._asHandle(raw);
-    } else {
-      // no server given — find which known server this name lives on
-      const hits = await disc.resolveUser(raw, this._knownServerUrls());
-      const mine = pqc.parseHandle(this.myHandle);
-      const external = hits.filter((h) => !(h.username === mine.username && pqc.normServer(h.server) === mine.server));
-      if (external.length === 0) {
-        throw new Error(`no account named "${raw}" found on the ${this._knownServerUrls().length} known server(s)`);
-      }
-      if (external.length > 1) {
-        const err = new Error(`"${raw}" exists on ${external.length} servers — pick one`);
-        err.code = 'AMBIGUOUS';
-        err.candidates = external.map((h) => ({
-          handle: pqc.formatHandle({ username: h.username, server: h.server }),
-          label: `${h.username} @ ${h.server.replace(/^https?:\/\//, '')}`,
-        }));
-        throw err;
-      }
-      other = pqc.formatHandle({ username: external[0].username, server: external[0].server });
-    }
+    const other = this._asHandle(input);
     if (this.isMe(other)) throw new Error('cannot message yourself');
     const ids = await this.refreshContact(other, true);
     if (!ids.devices.length) throw new Error(`${other} has no enrolled devices yet`);
@@ -578,24 +554,10 @@ class Engine extends EventEmitter {
     const keep = [];
     for (const item of outbox) {
       try {
-        let home = item.homeServer || pqc.homeServer(item.participants);
-        let stored;
-        try {
-          ({ stored } = await this._fed('POST', home, `/api/conv/${item.convId}/messages`, {
-            body: { envelope: item.envelope, participants: item.participants, kind: item.kind, name: item.name },
-          }));
-        } catch (e) {
-          if (e.status === 421 && e.body && e.body.homeServer) {
-            home = pqc.normServer(e.body.homeServer); // server told us the real home — retry there
-            const conv = this.store.loadConversation(item.convId);
-            if (conv) (conv.homeServer = home), this.store.saveConversation(conv);
-            ({ stored } = await this._fed('POST', home, `/api/conv/${item.convId}/messages`, {
-              body: { envelope: item.envelope, participants: item.participants, kind: item.kind, name: item.name },
-            }));
-          } else {
-            throw e;
-          }
-        }
+        const home = item.homeServer || pqc.homeServer(item.participants);
+        const { stored } = await this._fed('POST', home, `/api/conv/${item.convId}/messages`, {
+          body: { envelope: item.envelope, participants: item.participants, kind: item.kind, name: item.name },
+        });
         const conv = this.store.loadConversation(item.convId);
         const rec = conv && conv.messages[item.msgId];
         if (rec) {
@@ -656,8 +618,6 @@ class Engine extends EventEmitter {
     this.emit('update');
     try {
       await this.flushOutbox();
-      // inbox on our OWN server: local conversations + pointers to conversations
-      // hosted on other servers where we are a participant
       const { conversations } = await this._fed('GET', this.identity.serverUrl, '/api/inbox', { auth: true });
       for (const c of conversations) {
         const existed = !!this.store.loadConversation(c.convId);
@@ -665,7 +625,7 @@ class Engine extends EventEmitter {
           c.convId,
           (c.participants || []).map((p) => this._asHandle(p)),
           c.kind,
-          c.homeServer ? pqc.normServer(c.homeServer) : null,
+          this.identity.serverUrl, // there is only one server
           c.name,
           existed ? undefined : 'pending' // someone else started it -> needs accept/decline
         );
@@ -688,17 +648,8 @@ class Engine extends EventEmitter {
     }
   }
 
-  async _fedConvGet(conv, path, query) {
-    try {
-      return await this._fed('GET', conv.homeServer, path, { query, auth: true, convId: conv.convId });
-    } catch (e) {
-      if (e.status === 421 && e.body && e.body.homeServer) {
-        conv.homeServer = pqc.normServer(e.body.homeServer);
-        this.store.saveConversation(conv);
-        return this._fed('GET', conv.homeServer, path, { query, auth: true, convId: conv.convId });
-      }
-      throw e;
-    }
+  _fedConvGet(conv, path, query) {
+    return this._fed('GET', conv.homeServer, path, { query, auth: true, convId: conv.convId });
   }
 
   async pullConversation(conv) {

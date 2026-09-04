@@ -106,8 +106,9 @@ async function waitHealth() {
 
   // clients get their own data root
   process.env.PQMSG_DATA_DIR = path.join(TMP, 'clients');
-  const { Engine } = require('../client/main/engine');
   const S = `http://127.0.0.1:${PORT}`;
+  process.env.PQMSG_SERVER_URL = S; // the one server this test's clients talk to
+  const { Engine } = require('../client/main/engine');
   const alice = new Engine('alice');
   const bob = new Engine('bob');
   const quiet = (e) => e; // engines emit 'update' a lot; ignore
@@ -115,8 +116,8 @@ async function waitHealth() {
   bob.on('update', quiet);
 
   const enroll = async (e, name, dev) => {
-    await e.register({ serverUrl: S, username: name, email: `${name}@test.local`, password: 'hunter2' });
-    const r = await e.login({ serverUrl: S, username: name, password: 'hunter2', deviceName: dev });
+    await e.register({ username: name, email: `${name}@test.local`, password: 'hunter2' });
+    const r = await e.login({ username: name, password: 'hunter2', deviceName: dev });
     if (r.needs2fa) await e.completeLogin({ code: r.devCode, rememberDevice: true }); // dev mode returns the code
     e.stopLoops();
   };

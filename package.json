@@ -1,6 +1,6 @@
 {
   "name": "pqmsg",
-  "version": "0.4.0",
+  "version": "0.5.0",
   "private": true,
   "description": "Post-quantum end-to-end encrypted messenger (iMessage-style) with an inspectable server console",
   "type": "commonjs",
@@ -13,17 +13,12 @@
   },
   "scripts": {
     "server": "node server/src/index.js",
-    "server:app": "electron server/app/main.js",
-    "registry": "node registry/index.js",
     "client": "electron .",
     "e2e": "node scripts/e2e.js",
-    "e2e:registry": "node scripts/e2e-registry.js",
-    "e2e:federation": "node scripts/e2e-federation.js",
-    "e2e:2fa": "node scripts/e2e-2fa-master.js",
+    "e2e:2fa": "node scripts/e2e-2fa.js",
+    "e2e:network": "node scripts/e2e-network-resilience.js",
     "icon": "node scripts/make-icon.js",
-    "dist:client": "electron-builder --config build/client.yml --publish never",
-    "dist:server": "electron-builder --config build/server.yml --publish never",
-    "dist": "npm run dist:client && npm run dist:server"
+    "dist": "electron-builder --config build/client.yml --publish never"
   },
   "dependencies": {
     "@noble/ciphers": "^1.2.1",

@@ -1,0 +1,23 @@
+[Unit]
+Description=pqmsg server
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=pqmsg
+Group=pqmsg
+WorkingDirectory=/opt/pqmsg
+EnvironmentFile=/opt/pqmsg/deploy/pqmsg.env
+ExecStart=/usr/bin/node server/src/index.js
+Restart=on-failure
+RestartSec=3
+
+# minimal sandboxing — this process only needs to write server-data/
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/opt/pqmsg/server-data
+
+[Install]
+WantedBy=multi-user.target
