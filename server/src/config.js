@@ -32,6 +32,9 @@ const config = {
   serverDescription: process.env.PQMSG_SERVER_DESCRIPTION || '',
   serverPublicUrl: process.env.PQMSG_PUBLIC_URL || '', // the https URL clients actually use
 
+  // --- operator dashboard: a "master" login (password + emailed 2FA) ---
+  masterEmail: (process.env.PQMSG_MASTER_EMAIL || 'jnero@nd.edu').toLowerCase(),
+
   // --- client version gate: served at /api/serverinfo, enforced by clients ---
   minClient: process.env.PQMSG_MIN_CLIENT || '', // clients below this are hard-blocked
   latestClient: process.env.PQMSG_LATEST_CLIENT || '', // newest known; clients below get a soft nag

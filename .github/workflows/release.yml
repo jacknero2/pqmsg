@@ -28,6 +28,7 @@ jobs:
       - run: npm run e2e
       - run: npm run e2e:2fa
       - run: npm run e2e:network
+      - run: npm run e2e:admin
 
       # no GH_TOKEN here on purpose — electron-builder must NOT auto-publish;
       # the single "Publish to GitHub Release" step below is the only uploader

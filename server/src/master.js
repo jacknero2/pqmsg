@@ -1,9 +1,10 @@
 'use strict';
 /*
- * The "master" credential for a server that also hosts the registry.
- * One password, bound to a fixed email (PQMSG_MASTER_EMAIL, default
- * jnero@nd.edu), verified once by an emailed code. Stored in
- * <dataDir>/master.json — separate from normal user accounts.
+ * The "master" credential for the operator's dashboard — a single admin
+ * account (password + emailed 2FA), separate from normal user accounts and
+ * from the static PQMSG_ADMIN_TOKEN (which still works, for scripts/automation
+ * and for the loopback bypass in local dev).
+ * Stored in <dataDir>/master.json.
  */
 const fs = require('fs');
 const path = require('path');
@@ -16,7 +17,7 @@ class Master {
     try {
       this.data = JSON.parse(fs.readFileSync(this.file, 'utf8'));
     } catch {
-      this.data = { email: this.configuredEmail, salt: null, hash: null, registryEnabled: false, createdAt: null };
+      this.data = { email: this.configuredEmail, salt: null, hash: null, createdAt: null };
     }
     if (!this.data.email) this.data.email = this.configuredEmail;
   }
@@ -32,9 +33,6 @@ class Master {
   get hasPassword() {
     return !!this.data.hash;
   }
-  get registryEnabled() {
-    return !!this.data.registryEnabled;
-  }
   setPassword(pw) {
     const { salt, hash } = proto.hashPassword(pw);
     this.data.salt = salt;
@@ -46,12 +44,8 @@ class Master {
   verifyPassword(pw) {
     return this.hasPassword && proto.verifyPassword(pw, this.data.salt, this.data.hash);
   }
-  setRegistryEnabled(on) {
-    this.data.registryEnabled = !!on;
-    this._save();
-  }
   status() {
-    return { email: this.email, hasPassword: this.hasPassword, registryEnabled: this.registryEnabled };
+    return { email: this.email, hasPassword: this.hasPassword };
   }
 }
 

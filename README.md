@@ -121,6 +121,29 @@ the server relays them to a GitHub repo as deduped Issues (`shared/diagnostics.j
 new ones, and anything secret-shaped is scrubbed before it ever leaves the box.
 Otherwise it's just a line in the server's local activity log.
 
+### Operator dashboard & usage analytics
+
+`https://<your-server>/` is a login-gated console for whoever runs the server
+— separate from normal user accounts.
+
+- **Master login** — a single admin credential (password + emailed 2FA code),
+  set up on first visit. The resulting session is a signed, 30-day token kept
+  in the browser's `localStorage`, so it isn't re-entered every visit. The
+  static `PQMSG_ADMIN_TOKEN` (`?admin=<token>`) still works too, for scripts.
+  Forgot the password? "forgot password?" emails a reset code.
+- **Console tab** — live connections, accounts/devices/safety numbers,
+  a folder tree of conversations with ciphertext previews and raw envelopes,
+  and an event ticker. Everything shown is ciphertext or metadata — message
+  bodies are never readable here.
+- **Analytics tab** (`GET /api/admin/analytics`) — total users, messages, and
+  currently-online count, plus daily charts for the last 30 days: signups,
+  active users, logins, messages sent, peak concurrent connections, and
+  average session length. Signup counts are derived directly from account
+  creation timestamps (accurate retroactively); everything else is tracked
+  going forward by `server/src/analytics.js`, a small persisted daily-bucket
+  counter file (`<dataDir>/analytics.json`) — not a raw event log, so it stays
+  small forever and survives restarts.
+
 ---
 
 ## Functionality
@@ -132,9 +155,10 @@ Otherwise it's just a line in the server's local activity log.
 - **Delivery receipts** — gold = delivered, light red = not yet.
 - **Multi-device** — enroll the same account on several machines; each is a
   separate device in the IDS and receives every message.
-- **Read-only server console** — folder tree of conversations, ciphertext
-  previews, raw envelopes, live connection list, event ticker. It cannot read
-  message bodies.
+- **Operator dashboard** — master login, a read-only console (conversations,
+  ciphertext previews, raw envelopes, live connections, event ticker — it
+  cannot read message bodies), and a usage-analytics tab (signups, DAU,
+  messages, peak concurrency, session length).
 
 ---
 
@@ -147,11 +171,12 @@ npm install
 npm run e2e         # crypto + single-server round trip (DMs, groups, delivery, ordering)
 npm run e2e:2fa     # email 2FA + trusted devices
 npm run e2e:network # resume()/discovery resilience, concurrent writes, diagnostics, rate limits
+npm run e2e:admin   # master login/2FA/forgot-password, session-token auth, usage analytics
 ```
 
 | Command | Runs |
 |---|---|
-| `npm run server` | headless server on `:8787` |
+| `npm run server` | headless server on `:8787` (dashboard at `/`) |
 | `PQMSG_PROFILE=alice npm run client` | a client (set distinct profiles to run several locally) |
 | `npm run dist` | build a client installer for the current OS into `dist/` |
 
@@ -159,10 +184,11 @@ Useful env: `PQMSG_PUBLIC=1` (required for any internet-facing server),
 `PQMSG_PUBLIC_URL` (the https URL clients use), `PQMSG_SMTP_*` (send real 2FA
 emails), `PQMSG_MIN_CLIENT`/`PQMSG_LATEST_CLIENT` (version floor),
 `PQMSG_SEND_DIAGNOSTICS`/`PQMSG_DIAG_TOKEN`/`PQMSG_DIAG_REPO` (error reporting),
-`STORE_BACKEND=github` (commit the encrypted store to a repo instead of local
-disk), `PQMSG_SERVER_URL` (client-side: which server to talk to, for local
-dev — the packaged client always points at `chat.jacknero.com`). See
-`.env.example`.
+`PQMSG_MASTER_EMAIL` (who the dashboard's 2FA codes go to, default
+`jnero@nd.edu`), `STORE_BACKEND=github` (commit the encrypted store to a repo
+instead of local disk), `PQMSG_SERVER_URL` (client-side: which server to talk
+to, for local dev — the packaged client always points at `chat.jacknero.com`).
+See `.env.example`.
 
 ## Deploy
 

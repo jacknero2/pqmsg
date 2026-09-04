@@ -25,6 +25,8 @@ const pqc = require('../../shared/crypto');
 const { createMailer, maskEmail } = require('../../shared/email');
 const { ChallengeStore, issueTrust, checkTrust } = require('../../shared/twofa');
 const diagnostics = require('../../shared/diagnostics');
+const master = require('./master');
+const { Analytics } = require('./analytics');
 const PKG_VERSION = require('../../package.json').version;
 
 const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
@@ -43,6 +45,8 @@ const presence = new Presence();
 let store;
 let SECRETS;
 let mailer = createMailer({}); // replaced with configured transport at boot
+let masterState = null; // Master instance — the operator's dashboard credential
+let analytics = null; // Analytics instance — persisted usage counters
 const challenges = new ChallengeStore();
 /** surfaced 2FA codes when email isn't configured (dev mode) — id -> {code, at} */
 const devCodes = new Map();
@@ -111,15 +115,20 @@ function isLoopback(req) {
 }
 // effective admin token: the env one if given, else the auto one in server secrets
 const adminTokenValue = () => config.adminToken || (SECRETS && SECRETS.adminToken) || '';
+/** a master-login session (see /api/admin/master/*) is a signed, expiring alternative to the static token */
+function isMasterSession(given) {
+  const claims = given && proto.verifyToken(SECRETS.masterSecret, given);
+  return !!(claims && claims.t === 'admin-session');
+}
 function adminOk(given, req) {
-  if (given && given === adminTokenValue()) return true;
+  if (given && (given === adminTokenValue() || isMasterSession(given))) return true;
   // loopback bypass — UNSAFE behind a proxy/tunnel (every req looks like 127.0.0.1),
   // so it is disabled when PQMSG_PUBLIC is set.
   return !config.public && isLoopback(req);
 }
 function admin(req, res, next) {
   if (adminOk(req.get('x-admin-token') || req.query.admin, req)) return next();
-  return res.status(403).json({ error: 'admin auth required — append ?admin=<token> (see server startup log)' });
+  return res.status(403).json({ error: 'admin auth required — log in on the dashboard, or append ?admin=<token>' });
 }
 const wrap = (fn) => (req, res) =>
   Promise.resolve(fn(req, res)).catch((e) => {
@@ -207,11 +216,13 @@ app.post(
     if (req.body.trustToken && checkTrust(SECRETS.trustSecret, req.body.trustToken, username)) {
       const token = proto.issueToken(SECRETS.tokenSecret, { username });
       presence.log('login', { username, via: 'trusted-device' });
+      analytics.recordLogin(username);
       return res.json({ token, username });
     }
     if (!acct.email) {
       // legacy account with no email on file — allow through, no 2FA possible
       const token = proto.issueToken(SECRETS.tokenSecret, { username });
+      analytics.recordLogin(username);
       return res.json({ token, username, note: 'no email on file — 2FA skipped' });
     }
     const { id, code } = challenges.create('login', username, { username });
@@ -235,6 +246,7 @@ app.post(
     const out = { token, username };
     if (req.body.rememberDevice) out.trustToken = issueTrust(SECRETS.trustSecret, username, config.trustedDeviceDays);
     presence.log('login', { username, via: '2fa' });
+    analytics.recordLogin(username);
     res.json(out);
   })
 );
@@ -334,6 +346,7 @@ app.post(
     });
     const stored = await store.appendMessage(convId, envelope);
     presence.log('message', { convId, msgId: stored.msgId, sender: stored.sender, serverSeq: stored.serverSeq, recipients: stored.recipients.length });
+    analytics.recordMessage(pqc.parseHandle(stored.sender).username);
     wakeLocal(meta.participants || parts, convId, stored.serverSeq);
     res.json({ stored });
   })
@@ -545,6 +558,105 @@ app.get('/api/serverinfo', (req, res) =>
   })
 );
 
+// --------------------------------------------------------------------------
+// operator dashboard: master login (password + emailed 2FA) + usage analytics
+// --------------------------------------------------------------------------
+app.get('/api/admin/master/status', wrap(async (req, res) => res.json(masterState.status())));
+
+app.post(
+  '/api/admin/master/setup',
+  wrap(async (req, res) => {
+    if (masterState.hasPassword) throw Object.assign(new Error('master password already set — use /login'), { status: 409 });
+    const password = String(req.body.password || '');
+    if (password.length < 8) throw Object.assign(new Error('master password must be >= 8 chars'), { status: 400 });
+    masterState.setPassword(password);
+    const { id, code } = challenges.create('admin-master', masterState.email, {});
+    const surf = await sendCode({ id, code, to: masterState.email, subject: 'pqmsg dashboard — verify' });
+    presence.log('master-setup', { email: maskEmail(masterState.email), dev: surf.dev });
+    res.json({ needs2fa: true, challengeId: id, email: maskEmail(masterState.email), ...surf });
+  })
+);
+
+app.post(
+  '/api/admin/master/login',
+  wrap(async (req, res) => {
+    if (!masterState.hasPassword) throw Object.assign(new Error('no master password set — use /setup'), { status: 409 });
+    if (!masterState.verifyPassword(String(req.body.password || ''))) {
+      throw Object.assign(new Error('invalid master password'), { status: 401 });
+    }
+    const { id, code } = challenges.create('admin-master', masterState.email, {});
+    const surf = await sendCode({ id, code, to: masterState.email, subject: 'pqmsg dashboard — login code' });
+    res.json({ needs2fa: true, challengeId: id, email: maskEmail(masterState.email), ...surf });
+  })
+);
+
+app.post(
+  '/api/admin/master/verify',
+  wrap(async (req, res) => {
+    const r = challenges.verify(String(req.body.challengeId || ''), String(req.body.code || ''));
+    if (!r.ok) {
+      const status = r.error === 'bad_code' ? 401 : r.error === 'too_many_attempts' ? 429 : 400;
+      throw Object.assign(new Error(r.error), { status });
+    }
+    // long-lived: the dashboard persists this in localStorage and re-validates it
+    // on load, so this only needs to be revocable, not short.
+    const sessionToken = proto.issueToken(SECRETS.masterSecret, { t: 'admin-session' }, 30 * 24 * 3600 * 1000);
+    presence.log('master-login', {});
+    res.json({ sessionToken });
+  })
+);
+
+// forgot master password -> emailed reset code -> new password
+app.post(
+  '/api/admin/master/reset',
+  wrap(async (req, res) => {
+    if (!masterState.hasPassword) throw Object.assign(new Error('no master password set — use /setup'), { status: 409 });
+    const { id, code } = challenges.create('admin-master-reset', masterState.email, {});
+    const surf = await sendCode({ id, code, to: masterState.email, subject: 'pqmsg dashboard — password reset' });
+    presence.log('master-reset-request', { email: maskEmail(masterState.email), dev: surf.dev });
+    res.json({ needs2fa: true, challengeId: id, email: maskEmail(masterState.email), ...surf });
+  })
+);
+app.post(
+  '/api/admin/master/reset/verify',
+  wrap(async (req, res) => {
+    const newPassword = String(req.body.newPassword || '');
+    if (newPassword.length < 8) throw Object.assign(new Error('new password must be >= 8 chars'), { status: 400 });
+    const r = challenges.verify(String(req.body.challengeId || ''), String(req.body.code || ''));
+    if (!r.ok) {
+      const status = r.error === 'bad_code' ? 401 : r.error === 'too_many_attempts' ? 429 : 400;
+      throw Object.assign(new Error(r.error), { status });
+    }
+    masterState.setPassword(newPassword);
+    presence.log('master-reset-done', {});
+    res.json({ ok: true });
+  })
+);
+
+app.get(
+  '/api/admin/analytics',
+  admin,
+  wrap(async (req, res) => {
+    const days = Math.min(365, Math.max(1, parseInt(req.query.days || '30', 10)));
+    const accounts = await store.listAccounts();
+    // signup counts are exactly derivable from account.createdAt — no separate
+    // tracking needed, and it's accurate even for accounts created before this
+    // feature existed.
+    const signupsByDay = new Map();
+    for (const a of accounts) {
+      const key = new Date(a.createdAt).toISOString().slice(0, 10);
+      signupsByDay.set(key, (signupsByDay.get(key) || 0) + 1);
+    }
+    const series = analytics.series(days).map((d) => ({ ...d, signups: signupsByDay.get(d.date) || 0 }));
+    res.json({
+      totalUsers: accounts.length,
+      totalMessagesAllTime: (await store.stats()).messages,
+      currentlyOnline: presence.list().length,
+      series,
+    });
+  })
+);
+
 app.use('/', express.static(path.join(__dirname, '..', 'public')));
 
 // --------------------------------------------------------------------------
@@ -583,6 +695,7 @@ wss.on('connection', (ws) => {
   const { username, deviceId, deviceName, ip } = ws._ctx;
   liveClients.set(wsId, { ws, username, deviceId });
   presence.add(wsId, { username, deviceId, deviceName, ip });
+  analytics.recordConnect(wsId, username, liveClients.size);
   ws.send(JSON.stringify({ type: 'hello', serverTime: Date.now() }));
   ws.on('pong', () => presence.touch(wsId));
   ws.on('message', (raw) => {
@@ -595,6 +708,7 @@ wss.on('connection', (ws) => {
   ws.on('close', () => {
     liveClients.delete(wsId);
     presence.remove(wsId);
+    analytics.recordDisconnect(wsId);
   });
 });
 
@@ -637,6 +751,8 @@ async function startServer(overrides = {}) {
   const adminToken = config.adminToken || SECRETS.adminToken;
 
   mailer = createMailer(config);
+  masterState = new master.Master(config.dataDir, config.masterEmail);
+  analytics = new Analytics(config.dataDir);
 
   await new Promise((resolve, reject) => {
     const onErr = (e) => reject(e);
@@ -674,6 +790,7 @@ async function startServer(overrides = {}) {
     mailerMode: () => mailer.mode,
     setServerInfo,
     close: async () => {
+      analytics.close();
       await new Promise((r) => server.close(r));
     },
   };

@@ -7,39 +7,87 @@
     <link rel="stylesheet" href="dashboard.css" />
   </head>
   <body>
-    <header>
-      <div class="brand">pqmsg<span class="chev">▷</span> server console</div>
-      <div class="stat" id="stat"></div>
-      <div class="right">
-        <span id="clock"></span>
-        <label>refresh <select id="interval">
-          <option value="1000">1s</option>
-          <option value="2000" selected>2s</option>
-          <option value="5000">5s</option>
-          <option value="10000">10s</option>
-        </select></label>
-      </div>
-    </header>
+    <!-- master login gate -->
+    <section id="gate" class="overlay" hidden>
+      <div class="panel">
+        <h1>pqmsg<span class="chev">▷</span> dashboard</h1>
 
-    <main>
-      <section class="col">
-        <h2>connections <span id="conn-count" class="pill">0</span></h2>
-        <div id="connections" class="scroll"></div>
-
-        <h2>accounts / IDS <span id="acct-count" class="pill">0</span></h2>
-        <div id="accounts" class="scroll"></div>
-      </section>
-
-      <section class="col grow">
-        <h2>conversations <span id="conv-count" class="pill">0</span></h2>
-        <div class="split">
-          <div id="conversations" class="scroll list"></div>
-          <div id="conv-detail" class="scroll detail"><p class="dim">select a conversation folder</p></div>
+        <div id="gate-setup" hidden>
+          <p class="dim">First time here — set a password for <b id="setup-email"></b>. A code will be
+            emailed there to confirm it's really you.</p>
+          <label>password (min 8 chars)<input id="setup-pw" type="password" /></label>
+          <button id="btn-setup" class="primary">set password</button>
         </div>
-      </section>
-    </main>
 
-    <footer id="events"></footer>
+        <div id="gate-login" hidden>
+          <label>master password<input id="login-pw" type="password" /></label>
+          <button id="btn-login" class="primary">log in</button>
+          <button id="btn-forgot" class="ghost sm">forgot password?</button>
+        </div>
+
+        <div id="gate-forgot" hidden>
+          <p class="dim">A reset code will be emailed to <b id="forgot-email"></b>.</p>
+          <button id="btn-forgot-send" class="primary">send reset code</button>
+          <button id="btn-forgot-cancel" class="ghost sm">cancel</button>
+        </div>
+
+        <div id="gate-code" hidden>
+          <p class="hint" id="code-info"></p>
+          <label id="code-newpw-l" hidden>new password (min 8 chars)<input id="code-newpw" type="password" /></label>
+          <label>verification code<input id="code-in" inputmode="numeric" maxlength="6" /></label>
+          <button id="btn-code" class="primary">verify</button>
+        </div>
+
+        <p id="gate-msg" class="msg"></p>
+      </div>
+    </section>
+
+    <div id="dash" hidden>
+      <header>
+        <div class="brand">pqmsg<span class="chev">▷</span> server console</div>
+        <nav class="tabs">
+          <button id="tab-console" class="tab active">console</button>
+          <button id="tab-analytics" class="tab">analytics</button>
+        </nav>
+        <div class="stat" id="stat"></div>
+        <div class="right">
+          <span id="clock"></span>
+          <label>refresh <select id="interval">
+            <option value="1000">1s</option>
+            <option value="2000" selected>2s</option>
+            <option value="5000">5s</option>
+            <option value="10000">10s</option>
+          </select></label>
+        </div>
+      </header>
+
+      <main id="view-console">
+        <section class="col">
+          <h2>connections <span id="conn-count" class="pill">0</span></h2>
+          <div id="connections" class="scroll"></div>
+
+          <h2>accounts / IDS <span id="acct-count" class="pill">0</span></h2>
+          <div id="accounts" class="scroll"></div>
+        </section>
+
+        <section class="col grow">
+          <h2>conversations <span id="conv-count" class="pill">0</span></h2>
+          <div class="split">
+            <div id="conversations" class="scroll list"></div>
+            <div id="conv-detail" class="scroll detail"><p class="dim">select a conversation folder</p></div>
+          </div>
+        </section>
+      </main>
+
+      <main id="view-analytics" hidden>
+        <section class="col grow analytics">
+          <div class="kpis" id="kpis"></div>
+          <div class="charts" id="charts"></div>
+        </section>
+      </main>
+
+      <footer id="events"></footer>
+    </div>
 
     <div id="raw" class="modal" hidden>
       <div class="modal-inner">
