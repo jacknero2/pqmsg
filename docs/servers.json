@@ -1,5 +1,5 @@
 {
   "_comment": "Read by every client on startup. 'registry' is THE thing to set: the URL of your registry — either a standalone service (npm run registry) or a server running in master-registry mode, e.g. https://your-server.example.com/registry . Clients pull every server listed there, default new accounts to the registry host, and resolve bare usernames across all of them. 'servers' is an optional always-shown extra list of { name, url, description }.",
-  "registry": "http://10.12.180.218:8787/registry",
+  "registry": "https://tend-lookup-roommate-floral.trycloudflare.com/registry",
   "servers": []
 }
