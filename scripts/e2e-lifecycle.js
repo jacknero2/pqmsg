@@ -126,6 +126,30 @@ const S = () => `http://127.0.0.1:${PORT}`;
     ok('unblock re-opens the channel both ways');
   });
 
+  await section('retry: a failed message re-sends the same envelope, once, on demand', async () => {
+    await alice.blockPeer(cid);
+    await sync([alice, bob], 8);
+    await bob.sendMessage(cid, 'retry me later');
+    await sync([bob], 6);
+    const failed = bob.getConversationView(cid).messages.find((m) => m.text === 'retry me later');
+    assert.strictEqual(failed.display, 'failed', 'message failed while blocked');
+    // retrying while still blocked fails again and does NOT duplicate
+    await bob.retryMessage(cid, failed.msgId);
+    await sync([bob], 6);
+    assert.strictEqual(bob.getConversationView(cid).messages.find((m) => m.msgId === failed.msgId).display, 'failed', 'retry while blocked fails again');
+    assert.strictEqual(bob.getConversationView(cid).messages.filter((m) => m.text === 'retry me later').length, 1, 'still one bubble after a failed retry');
+    // unblock, retry -> delivers, still exactly one bubble
+    await alice.unblockPeer(cid);
+    await sync([alice, bob], 8);
+    await bob.retryMessage(cid, failed.msgId);
+    await sync([alice, bob], 12);
+    const now = bob.getConversationView(cid).messages.find((m) => m.msgId === failed.msgId);
+    assert.notStrictEqual(now.display, 'failed', 'after unblock the retry delivers');
+    assert.ok(alice.getConversationView(cid).messages.some((m) => m.text === 'retry me later'), 'alice receives the retried message');
+    assert.strictEqual(bob.getConversationView(cid).messages.filter((m) => m.text === 'retry me later').length, 1, 'no duplicate from repeated retries');
+    ok('retry re-fires the exact parked envelope, is safe to repeat, and delivers once the block is lifted');
+  });
+
   // ---------------------------------------------------------------------
   await section('account deletion (self): login, IDS and enrollment all stop working', async () => {
     const carol = mk('carol');

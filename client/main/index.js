@@ -175,6 +175,7 @@ app.whenReady().then(async () => {
   H('pqmsg:sendMessage', (a) => engine.sendMessage(a.convId, a.text, a.opts || {}));
   H('pqmsg:editMessage', (a) => engine.editMessage(a.convId, a.msgId, a.text));
   H('pqmsg:reactToMessage', (a) => engine.reactToMessage(a.convId, a.msgId, a.emoji));
+  H('pqmsg:retryMessage', (a) => engine.retryMessage(a.convId, a.msgId));
   H('pqmsg:pickFile', () => pickFileForSend());
   H('pqmsg:sendAttachment', (a) => engine.sendAttachment(a.convId, a.file, a.opts || {}));
   H('pqmsg:saveAttachment', (a) => saveToDownloads(a));

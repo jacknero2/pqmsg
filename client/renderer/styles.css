@@ -169,6 +169,7 @@ main { flex: 1; display: flex; min-height: 0; }
 .conv .prev { color: var(--dim); font-size: 11px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .conv .prev .tag { color: var(--gold); }
 .conv .prev .tag.red { color: var(--lred); }
+.conv .prev .tag.grey { color: var(--dim); }
 
 #thread { flex: 1; display: flex; flex-direction: column; min-width: 0; }
 #thread-head {
@@ -196,9 +197,16 @@ main { flex: 1; display: flex; min-height: 0; }
 .bubble.in { align-self: flex-start; background: #0f1b1f; border-color: #1f4a49; }
 .bubble.in .meta { color: #4f8f8b; }
 .bubble.out { align-self: flex-end; }
-.bubble.out[data-display="undelivered"] { background: #2a1517; border-color: var(--lred); color: #ffd9d9; }
+/* not yet confirmed delivered — neutral grey, clearly distinct from "failed" */
+.bubble.out[data-display="undelivered"] { background: #1b232c; border-color: #3a4753; color: #9aa7b2; }
+.bubble.out[data-display="undelivered"] .meta { color: #6f7d89; }
 .bubble.out[data-display="delivered"] { background: #2c2410; border-color: var(--gold); color: #ffeebb; }
 .bubble.out[data-display="failed"] { background: #2a1517; border-color: #ff4d4d; color: #ffbcbc; }
+.bubble .retry-btn {
+  margin-left: 6px; font-size: 9px; padding: 1px 7px; border-radius: 8px;
+  border: 1px solid #ff4d4d; background: #3a1c1f; color: #ffd0d0; cursor: pointer;
+}
+.bubble .retry-btn:hover { background: #4a2327; border-color: #ff6b6b; }
 .bubble[data-display="locked"] { align-self: center; background: #14181d; border-color: var(--line); color: var(--dim); font-size: 11px; }
 .bubble[data-display="suspect"] { align-self: flex-start; background: #251c0f; border-color: var(--orange); color: #ffe0b0; }
 .bubble.flash { animation: flash .5s; }
@@ -262,8 +270,17 @@ main { flex: 1; display: flex; min-height: 0; }
 #composer-chrome .cc-quote { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; opacity: .8; }
 #composer-chrome .cc-x { background: transparent; border-color: var(--line); color: var(--dim); padding: 1px 7px; }
 
-#composer { display: flex; gap: 8px; padding: 10px 14px; border-top: 1px solid var(--line); background: var(--panel2); }
-#composer input { flex: 1; }
+#composer { display: flex; gap: 8px; align-items: flex-end; padding: 10px 14px; border-top: 1px solid var(--line); background: var(--panel2); }
+#composer #btn-attach { flex: 0 0 auto; }
+#composer button[type="submit"] { flex: 0 0 auto; }
+#composer #in-msg {
+  flex: 1; font-family: var(--mono); font-size: 13px; line-height: 1.45;
+  background: var(--panel2); border: 1px solid var(--line); color: var(--ink);
+  padding: 7px 9px; border-radius: 6px; outline: none;
+  resize: none; overflow-y: auto; max-height: 168px; /* ~7 lines, then it scrolls */
+  white-space: pre-wrap; word-break: break-word;
+}
+#composer #in-msg:focus { border-color: var(--cyan); }
 #composer.blocked { opacity: .5; pointer-events: none; }
 
 /* server picker (login screen) */

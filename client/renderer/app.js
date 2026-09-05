@@ -289,6 +289,7 @@ function setEditTarget(m) {
   editTarget = { msgId: m.msgId };
   replyTarget = null;
   $('in-msg').value = m.text || '';
+  autoGrowComposer();
   paintComposerChrome();
   $('in-msg').focus();
   $('in-msg').select();
@@ -297,6 +298,16 @@ function clearComposerTargets() {
   replyTarget = null;
   editTarget = null;
   paintComposerChrome();
+}
+// grow the composer with the text so you can read the whole message as you type
+function autoGrowComposer() {
+  const t = $('in-msg');
+  t.style.height = 'auto';
+  t.style.height = Math.min(t.scrollHeight, 168) + 'px';
+}
+function resetComposer() {
+  $('in-msg').value = '';
+  autoGrowComposer();
 }
 function paintComposerChrome() {
   const strip = $('composer-chrome');
@@ -325,7 +336,7 @@ $('composer').addEventListener('submit', async (e) => {
   const inp = $('in-msg');
   const text = inp.value;
   if (!text.trim() || !activeConv) return;
-  inp.value = '';
+  resetComposer();
   let r;
   if (editTarget) {
     const id = editTarget.msgId;
@@ -341,10 +352,21 @@ $('composer').addEventListener('submit', async (e) => {
   if (!r.ok) {
     logLine(`<span class="r">send error: ${esc(r.error)}</span>`);
     inp.value = text;
+    autoGrowComposer();
   }
 });
+$('in-msg').addEventListener('input', autoGrowComposer);
 $('in-msg').addEventListener('keydown', (e) => {
-  if (e.key === 'Escape') { $('in-msg').value = editTarget ? '' : $('in-msg').value; clearComposerTargets(); }
+  // enter sends; shift+enter (or alt/ctrl+enter) inserts a newline
+  if (e.key === 'Enter' && !e.shiftKey && !e.altKey && !e.ctrlKey && !e.metaKey) {
+    e.preventDefault();
+    $('composer').requestSubmit ? $('composer').requestSubmit() : $('composer').dispatchEvent(new Event('submit', { cancelable: true }));
+    return;
+  }
+  if (e.key === 'Escape') {
+    if (editTarget) resetComposer();
+    clearComposerTargets();
+  }
 });
 
 // ---------- attachments ----------
@@ -355,7 +377,7 @@ $('btn-attach').onclick = async () => {
   if (!pick.data) return; // user cancelled
   const caption = $('in-msg').value.trim();
   const replyTo = replyTarget ? replyTarget.msgId : undefined;
-  $('in-msg').value = '';
+  resetComposer();
   clearComposerTargets();
   const r = await window.pqmsg.sendAttachment(activeConv, pick.data, { caption, replyTo });
   if (!r.ok) logLine(`<span class="r">send error: ${esc(r.error)}</span>`);
@@ -373,10 +395,13 @@ function openMessageMenu(m, x, y) {
   const menu = document.createElement('div');
   menu.className = 'ctx-menu';
   const items = [];
-  items.push({ label: '↩  reply', fn: () => setReplyTarget({ msgId: m.msgId, who: m.mine ? 'You' : m.sender, textPreview: m.text || (m.attachment ? '📎 ' + m.attachment.name : '') }) });
-  items.push({ label: '😊  react', fn: () => openEmojiPicker(m, x, y) });
-  if (m.canEdit) items.push({ label: '✎  edit', fn: () => setEditTarget(m) });
-  if (m.text) items.push({ label: '⧉  copy text', fn: () => navigator.clipboard && navigator.clipboard.writeText(m.text) });
+  if (m.mine && m.display === 'failed') {
+    items.push({ label: 'Retry send', fn: () => retrySend(m.msgId) });
+  }
+  items.push({ label: 'Reply', fn: () => setReplyTarget({ msgId: m.msgId, who: m.mine ? 'You' : m.sender, textPreview: m.text || (m.attachment ? m.attachment.name : '') }) });
+  items.push({ label: 'React', fn: () => openEmojiPicker(m, x, y) });
+  if (m.canEdit) items.push({ label: 'Edit', fn: () => setEditTarget(m) });
+  if (m.text) items.push({ label: 'Copy text', fn: () => navigator.clipboard && navigator.clipboard.writeText(m.text) });
   for (const it of items) {
     const b = document.createElement('button');
     b.type = 'button';
@@ -429,13 +454,13 @@ function openThreadMenu(conv, x, y) {
   const items = [];
   if (conv.kind === 'dm' && conv.peerUsername) {
     if (conv.iBlockPeer) {
-      items.push({ label: '✓  unblock @' + conv.peerUsername, fn: () => window.pqmsg.unblockPeer(conv.convId) });
+      items.push({ label: 'Unblock @' + conv.peerUsername, fn: () => window.pqmsg.unblockPeer(conv.convId) });
     } else {
-      items.push({ label: '🚫  block @' + conv.peerUsername, danger: true, fn: () => window.pqmsg.blockPeer(conv.convId) });
+      items.push({ label: 'Block @' + conv.peerUsername, danger: true, fn: () => window.pqmsg.blockPeer(conv.convId) });
     }
   }
   items.push({
-    label: '🗑  delete chat',
+    label: 'Delete chat',
     danger: true,
     fn: () => {
       if (confirm('Delete this chat on your side? The other person keeps their copy. If they message you again it will come back as a new request.')) {
@@ -514,8 +539,12 @@ function render() {
   for (const c of state.conversations.filter((x) => x.status === 'active')) {
     const div = document.createElement('div');
     div.className = 'conv' + (c.convId === activeConv ? ' active' : '');
-    const tagClass = c.lastMine ? (c.lastDisplay === 'delivered' ? 'tag' : 'tag red') : 'tag';
-    const tag = c.lastMine ? `<span class="${tagClass}">${c.lastDisplay === 'delivered' ? '✓ delivered' : '· pending'}</span> ` : '';
+    let tag = '';
+    if (c.lastMine) {
+      if (c.lastDisplay === 'delivered') tag = '<span class="tag">✓ delivered</span> ';
+      else if (c.lastDisplay === 'failed') tag = '<span class="tag red">✗ not sent</span> ';
+      else tag = '<span class="tag grey">· sending…</span> ';
+    }
     const icon = c.kind === 'group' ? '👥 ' : '';
     div.innerHTML = `<div class="name">${icon}${esc(c.title)}</div><div class="prev">${tag}${esc(c.lastText || '…')}</div>`;
     div.onclick = () => selectConv(c.convId);
@@ -579,14 +608,15 @@ async function renderThread() {
     d.dataset.msgId = m.msgId;
     const when = new Date(m.sentAt).toLocaleTimeString();
     let status = '';
+    const failed = m.mine && m.display === 'failed';
     if (m.mine) {
       status =
         m.display === 'delivered'
           ? ' · delivered ✓'
-          : m.display === 'failed'
-          ? ' · failed ✗ ' + esc(m.error || '')
+          : failed
+          ? ' · not sent ✗ ' + esc(m.error || '')
           : m.state === 'pending'
-          ? ' · queued'
+          ? ' · sending…'
           : ' · sent (awaiting delivery)';
     } else if (m.display === 'suspect') {
       status = ' · ⚠ unverified signature';
@@ -600,10 +630,12 @@ async function renderThread() {
     const att = renderAttachment(m.attachment);
     const bodyText = m.text ? `<div class="btext">${esc(m.text)}</div>` : '';
     const reax = renderReactions(m);
+    const retryBtn = failed ? '<button type="button" class="retry-btn">retry</button>' : '';
     d.innerHTML =
       quote + att + bodyText +
-      `<div class="meta">${m.mine ? 'you' : esc(m.sender)} · ${when} · #${m.serverSeq ?? '—'}${status}</div>` +
+      `<div class="meta">${m.mine ? 'you' : esc(m.sender)} · ${when} · #${m.serverSeq ?? '—'}${status}${retryBtn}</div>` +
       reax;
+    if (failed) d.querySelector('.retry-btn').onclick = (e) => { e.stopPropagation(); retrySend(m.msgId); };
 
     // right-click / ctrl-click -> context menu
     d.addEventListener('contextmenu', (e) => { e.preventDefault(); openMessageMenu(m, e.clientX, e.clientY); });
@@ -723,6 +755,12 @@ function attachSwipeToReply(el, m) {
     { passive: false }
   );
   el.addEventListener('mouseleave', () => { if (dragging) { clearTimeout(endTimer); springBack(); } });
+}
+
+async function retrySend(msgId) {
+  if (!activeConv) return;
+  const r = await window.pqmsg.retryMessage(activeConv, msgId);
+  if (!r.ok) logLine(`<span class="r">retry failed: ${esc(r.error)}</span>`);
 }
 
 function selectConv(id) {

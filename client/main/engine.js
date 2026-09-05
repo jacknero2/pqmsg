@@ -867,6 +867,7 @@ class Engine extends EventEmitter {
     if (!outbox.length) return;
     const keep = [];
     for (const item of outbox) {
+      if (item.parked) { keep.push(item); continue; } // failed hard, waiting for a manual retry
       try {
         const home = item.homeServer || pqc.homeServer(item.participants);
         const { stored } = await this._fed('POST', home, `/api/conv/${item.convId}/messages`, {
@@ -896,6 +897,10 @@ class Engine extends EventEmitter {
           }
           if (e.message === 'blocked' && conv) conv.blockedByPeer = true;
           if (conv) this.store.saveConversation(conv);
+          // park the envelope so retryMessage() can re-fire this exact message
+          item.parked = true;
+          item.lastError = friendly;
+          keep.push(item);
           this.event('send-failed', { convId: item.convId, msgId: item.msgId, error: friendly });
         } else {
           keep.push(item); // transient — retry next cycle
@@ -904,6 +909,45 @@ class Engine extends EventEmitter {
     }
     this.store.saveOutbox(keep);
     this.emit('update');
+  }
+
+  /**
+   * Re-send a message that failed. The exact signed envelope is still parked
+   * in the outbox, so this just un-parks it and flushes — the server dedupes
+   * by msgId, so a retry after a transient blip is a no-op there. A genuine
+   * rejection (blocked, bad membership) simply fails the same way again.
+   */
+  async retryMessage(convId, msgId) {
+    const outbox = this.store.loadOutbox();
+    const item = outbox.find((x) => x.convId === convId && x.msgId === msgId);
+    const conv = this.store.loadConversation(convId);
+    const rec = conv && (conv.messages[msgId] || (conv.controlMsgs && conv.controlMsgs[msgId]));
+
+    if (item) {
+      delete item.parked;
+      delete item.lastError;
+      this.store.saveOutbox(outbox);
+      if (rec) { rec.state = 'pending'; delete rec.error; if (rec.editPending !== undefined) rec.editPending = true; }
+      if (conv) this.store.saveConversation(conv);
+      this.event('retry', { convId, msgId });
+      this.emit('update');
+      await this.flushOutbox();
+      return { ok: true };
+    }
+
+    // envelope no longer queued (failed under an older build / after a wipe):
+    // rebuild it from the local record for plain text messages.
+    if (!conv || !rec || rec.text == null || rec.attachment || rec.system) {
+      throw new Error('can’t retry this one automatically — send it again');
+    }
+    const text = rec.text;
+    const replyTo = rec.replyTo ? rec.replyTo.msgId : undefined;
+    delete conv.messages[msgId];
+    conv.order = conv.order.filter((id) => id !== msgId);
+    this.store.saveConversation(conv);
+    this.emit('update');
+    await this.sendMessage(convId, text, replyTo ? { replyTo } : {});
+    return { ok: true };
   }
 
   _deliveredEnough(rec) {

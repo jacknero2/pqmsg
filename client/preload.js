@@ -25,6 +25,7 @@ contextBridge.exposeInMainWorld('pqmsg', {
   sendMessage: (convId, text, opts) => call('pqmsg:sendMessage', { convId, text, opts }),
   editMessage: (convId, msgId, text) => call('pqmsg:editMessage', { convId, msgId, text }),
   reactToMessage: (convId, msgId, emoji) => call('pqmsg:reactToMessage', { convId, msgId, emoji }),
+  retryMessage: (convId, msgId) => call('pqmsg:retryMessage', { convId, msgId }),
   pickFile: () => call('pqmsg:pickFile'),
   sendAttachment: (convId, file, opts) => call('pqmsg:sendAttachment', { convId, file, opts }),
   saveAttachment: (name, dataB64) => call('pqmsg:saveAttachment', { name, dataB64 }),
