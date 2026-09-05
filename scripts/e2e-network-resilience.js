@@ -106,6 +106,46 @@ async function section(name, fn) {
   });
 
   // ========================================================================
+  // Regression test for a real bug caught live: a profile whose saved
+  // identity points at a server that's gone forever (e.g. leftover from
+  // local dev testing) would retry resume() forever with backoff. If the
+  // user logged out or switched accounts while a retry was still pending,
+  // that stale timer would eventually fire, "succeed" at failing again, and
+  // silently flip needsLogin back to false — which looked like the app
+  // randomly bouncing between the login screen and the dashboard.
+  await section('switchAccount(): wipes local state and cannot be clobbered by a stale resume retry', async () => {
+    delete require.cache[require.resolve('../client/main/engine')];
+    const { Engine } = require('../client/main/engine');
+    const fs = require('fs');
+
+    const e = new Engine('switch-test', path.join(TMP, 'switch'), '0.1.0');
+    e.identity = { username: 'old', serverUrl: 'http://localhost:1', token: 'tok', deviceId: 'd1' };
+    e.store.saveIdentity(e.identity);
+    e.store.saveContact('somebody', { devices: [] });
+    assert.ok(fs.existsSync(path.join(e.store.dir, 'identity.json')));
+    assert.ok(fs.existsSync(path.join(e.store.dir, 'contacts.json')));
+
+    e.switchAccount();
+    assert.strictEqual(e.identity, null, 'identity cleared in memory');
+    assert.strictEqual(e.needsLogin, true);
+    assert.ok(!fs.existsSync(path.join(e.store.dir, 'identity.json')), 'identity.json removed from disk');
+    assert.ok(!fs.existsSync(path.join(e.store.dir, 'contacts.json')), 'cached contacts removed too — nothing leaks to the next account');
+    ok('switchAccount() fully resets identity + cached local data for this profile');
+
+    // the race: a resume() retry already in flight when switchAccount() is called
+    const e2 = new Engine('switch-test-2', path.join(TMP, 'switch2'), '0.1.0');
+    e2.identity = { username: 'old2', serverUrl: 'http://localhost:1', token: 'tok', deviceId: 'd1' };
+    e2.api = { myDevices: () => Promise.reject(new TypeError('fetch failed')) };
+    const gen = ++e2._resumeGen;
+    const pending = e2._tryResume(0, gen); // starts, will land in the offline/retry branch
+    e2.switchAccount(); // user switches accounts before that call resolves
+    await pending;
+    assert.strictEqual(e2.needsLogin, true, 'a resume attempt already in flight cannot override a switchAccount that happened after it started');
+    assert.strictEqual(e2._resumeRetryTimer, null, 'switchAccount cancels the pending retry timer outright');
+    ok('a stale in-flight resume() cannot clobber needsLogin after switchAccount/logout — the login/dashboard bounce is fixed');
+  });
+
+  // ========================================================================
   console.log('\n── starting a real server for HTTP-level races ─────');
   process.env.PQMSG_PORT = String(PORT);
   process.env.PQMSG_HOST = '127.0.0.1';

@@ -51,6 +51,18 @@ class ClientStore {
     this._writeJson(this._p('identity.json'), id);
   }
 
+  /**
+   * Wipe this profile back to a blank first-run state: identity, keys,
+   * cached contacts, outbox, and all locally decrypted conversation
+   * plaintext. Used when switching to a different account on this same
+   * install — without this, a new account's client would still be able to
+   * see the previous account's cached conversation history in its sidebar.
+   */
+  resetProfile() {
+    fs.rmSync(this.dir, { recursive: true, force: true });
+    fs.mkdirSync(this.convDir, { recursive: true });
+  }
+
   // server discovery ------------------------------------------------
   loadAppConfig() {
     return this._readJson(this._p('app-config.json'), {});

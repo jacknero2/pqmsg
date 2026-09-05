@@ -166,6 +166,16 @@ $('btn-logout').onclick = async () => {
   await window.pqmsg.logout();
   $('settings').hidden = true;
 };
+$('btn-switch-account').onclick = async () => {
+  const sure = confirm(
+    'Switch account? This forgets this device entirely — its keys and every locally cached ' +
+    'conversation — so it can no longer decrypt this account’s past messages on this machine. ' +
+    'A different account can then log in or register here.'
+  );
+  if (!sure) return;
+  await window.pqmsg.switchAccount();
+  $('settings').hidden = true;
+};
 $('si').addEventListener('input', (e) => {
   $('si-val').textContent = e.target.value;
 });

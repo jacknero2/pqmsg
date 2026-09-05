@@ -46,6 +46,12 @@ class Engine extends EventEmitter {
     this.lastSyncAt = 0;
     this.lastSyncError = null;
     this.log = [];
+    // Bumped by logout()/switchAccount() to invalidate any in-flight resume
+    // retry — without this, a stale retry timer from a dead-server session
+    // can fire after the user has already logged out (or switched to a
+    // brand-new account) and clobber needsLogin back to false, which looks
+    // like the UI randomly bouncing between the login screen and the app.
+    this._resumeGen = 0;
     // version gate
     this.updateGate = null; // { required, current, downloadUrl, source } -> hard block
     this.updateInfo = null; // { latest, downloadUrl }                   -> soft banner
@@ -255,7 +261,8 @@ class Engine extends EventEmitter {
     if (!this.identity) return;
     this.api = new Api(this.identity.serverUrl, this.identity.token);
     this.offline = false;
-    await this._tryResume(0);
+    const gen = ++this._resumeGen;
+    await this._tryResume(0, gen);
   }
 
   /**
@@ -265,10 +272,18 @@ class Engine extends EventEmitter {
    * relogin on every transient failure. Only a real 401/403 means the token
    * itself is invalid; anything else (fetch failure, 5xx, timeout) keeps the
    * existing session and retries with backoff instead.
+   *
+   * `gen` guards against a stale retry: if the user logs out or switches
+   * accounts while a retry is scheduled (e.g. because this identity points at
+   * a server that's gone forever), that old timer must not fire later and
+   * silently flip needsLogin back to false out from under a fresh session —
+   * which looked exactly like the UI randomly bouncing between screens.
    */
-  async _tryResume(attempt) {
+  async _tryResume(attempt, gen) {
+    if (gen !== this._resumeGen) return; // superseded by a logout/switch/newer resume
     try {
       await this.api.myDevices(); // validates token
+      if (gen !== this._resumeGen) return; // superseded while this call was in flight
       this.needsLogin = false;
       this.offline = false;
       if (this._resumeRetryTimer) clearTimeout(this._resumeRetryTimer);
@@ -277,6 +292,7 @@ class Engine extends EventEmitter {
       this.connectWs();
       this.syncOnce('resume').catch(() => {});
     } catch (e) {
+      if (gen !== this._resumeGen) return; // superseded while this call was in flight
       const authFailure = e.status === 401 || e.status === 403;
       if (authFailure) {
         this.needsLogin = true;
@@ -289,7 +305,7 @@ class Engine extends EventEmitter {
       this.reportDiagnostic('resume-offline', e.message, { attempt, status: e.status ?? null });
       this.event('offline', { error: e.message, attempt });
       const delay = Math.min(30_000, 1000 * 2 ** attempt) + Math.random() * 500;
-      this._resumeRetryTimer = setTimeout(() => this._tryResume(attempt + 1), delay);
+      this._resumeRetryTimer = setTimeout(() => this._tryResume(attempt + 1, gen), delay);
       this._resumeRetryTimer.unref && this._resumeRetryTimer.unref();
     }
   }
@@ -309,6 +325,9 @@ class Engine extends EventEmitter {
   }
 
   logout() {
+    this._resumeGen++; // invalidate any pending resume retry for this session
+    if (this._resumeRetryTimer) clearTimeout(this._resumeRetryTimer);
+    this._resumeRetryTimer = null;
     this.stopLoops();
     if (this.ws) try { this.ws.close(); } catch {}
     this.ws = null;
@@ -319,6 +338,32 @@ class Engine extends EventEmitter {
     }
     this.needsLogin = true;
     this.emit('update');
+  }
+
+  /**
+   * Forget this device's account entirely and return to a blank first-run
+   * state, so a different account can register/log in on this same install —
+   * "log out" alone can't do this: the identity (and thus the username it's
+   * permanently bound to) stays on disk so the *same* account can resume
+   * without re-enrolling. This wipes it, plus all locally cached conversation
+   * plaintext/contacts, so nothing from the old account leaks into the next
+   * one that logs in here.
+   */
+  switchAccount() {
+    this._resumeGen++;
+    if (this._resumeRetryTimer) clearTimeout(this._resumeRetryTimer);
+    this._resumeRetryTimer = null;
+    this.stopLoops();
+    if (this.ws) try { this.ws.close(); } catch {}
+    this.ws = null;
+    this.connected = false;
+    this.store.resetProfile();
+    this.identity = null;
+    this.api = null;
+    this._pending2fa = null;
+    this.needsLogin = true;
+    this.offline = false;
+    this.event('switch-account', {});
   }
 
   // -- loops / websocket ----------------------------------------------
