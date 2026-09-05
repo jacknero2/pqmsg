@@ -26,7 +26,14 @@ files:
 npmRebuild: false
 electronLanguages: ["en"]
 artifactName: ${name}-${version}-${os}-${arch}.${ext}
-publish: null
+# electron-builder emits the update manifests (latest.yml / latest-linux.yml)
+# + .blockmap files for this feed. `npm run dist` still passes --publish never,
+# so nothing is uploaded from a build machine; CI attaches the files to the
+# GitHub Release, and electron-updater reads them from there at runtime.
+publish:
+  provider: github
+  owner: jacknero2
+  repo: pqmsg
 
 mac:
   category: public.app-category.social-networking

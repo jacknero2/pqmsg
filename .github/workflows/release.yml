@@ -43,9 +43,11 @@ jobs:
         shell: bash
         run: |
           mkdir -p out
-          # depth 2 keeps dist/<app>/<installer> but skips dist/<app>/*-unpacked/*.exe
+          # depth 2 keeps dist/<app>/<file> but skips dist/<app>/*-unpacked/*.exe
+          # latest*.yml + *.blockmap are the electron-updater feed metadata
           find dist -mindepth 2 -maxdepth 2 -type f \
-            \( -name '*.dmg' -o -name '*-setup.exe' -o -name '*.AppImage' -o -name '*.deb' \) \
+            \( -name '*.dmg' -o -name '*-setup.exe' -o -name '*.AppImage' -o -name '*.deb' \
+               -o -name 'latest*.yml' -o -name '*.blockmap' \) \
             -exec cp {} out/ \;
           ls -la out
 

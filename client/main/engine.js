@@ -148,6 +148,7 @@ class Engine extends EventEmitter {
       readReceipts: this.readReceipts,
       log: this.log.slice(-60),
       appVersion: this.appVersion,
+      platform: process.platform,
       updateGate: this.updateGate,
       updateInfo: this.updateInfo,
     };

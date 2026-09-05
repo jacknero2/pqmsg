@@ -37,8 +37,11 @@ contextBridge.exposeInMainWorld('pqmsg', {
   setReadReceipts: (on) => call('pqmsg:setReadReceipts', { on }),
   contact: (username) => call('pqmsg:contact', { username }),
   openExternal: (url) => call('pqmsg:openExternal', { url }),
+  installUpdate: () => call('pqmsg:installUpdate'),
+  downloadUpdate: () => call('pqmsg:downloadUpdate'),
   onUpdate: (fn) => ipcRenderer.on('pqmsg:update', (_e, s) => fn(s)),
   onEvent: (fn) => ipcRenderer.on('pqmsg:event', (_e, ev) => fn(ev)),
   onToast: (fn) => ipcRenderer.on('pqmsg:toast', (_e, t) => fn(t)),
   onOpenConversation: (fn) => ipcRenderer.on('pqmsg:open-conversation', (_e, id) => fn(id)),
+  onUpdateStatus: (fn) => ipcRenderer.on('pqmsg:update-status', (_e, m) => fn(m)),
 });

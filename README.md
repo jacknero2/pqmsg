@@ -141,12 +141,22 @@ Delete your account from Settings (typed confirmation) — removes it and its
 data from the server and wipes it from this device. Operators can remove
 accounts from the dashboard or with `npm run cleanup-users`.
 
-### Version gates
+### Updates
 
-Two, checked on startup and every 6 h: a **global floor** (`docs/version.json` —
-raise `minSupported` to hard-block old clients) and a **per-server floor**
-(`PQMSG_MIN_CLIENT`). Below the floor the client shows an unskippable "update
-required" screen and refuses to sign in.
+- **Windows & Linux (AppImage): automatic.** `electron-updater` reads the
+  `latest.yml` feed attached to each GitHub Release, downloads the new
+  installer in the background, verifies its SHA-512, and installs on the
+  next restart. A banner shows progress and a "restart & install" button.
+  `PQMSG_NO_AUTOUPDATE=1` opts a client out.
+- **macOS: one-click download.** Squirrel.Mac won't apply an unsigned
+  update, so the banner's button fetches the right `.dmg` into Downloads
+  and opens it; you still drag it to Applications and clear Gatekeeper
+  once. (`.deb` installs are the same one-click download.)
+- **Version gates** on top of that, checked on startup and every 6 h: a
+  **global floor** (`docs/version.json` — raise `minSupported` to
+  hard-block old clients) and a **per-server floor** (`PQMSG_MIN_CLIENT`).
+  Below the floor the client shows an unskippable "update required" screen
+  and refuses to sign in.
 
 ### Diagnostics
 

@@ -1,8 +1,12 @@
 'use strict';
 const path = require('path');
 const fs = require('fs');
+const https = require('https');
 const { app, BrowserWindow, ipcMain, shell, dialog, nativeImage, Notification } = require('electron');
+const { autoUpdater } = require('electron-updater');
 const { Engine } = require('./engine');
+
+const REPO = 'jacknero2/pqmsg';
 
 // Some Windows GPU drivers black-screen an Electron window on the first
 // non-trivial repaint — typing into a field on the login screen is a common
@@ -142,6 +146,98 @@ process.on('unhandledRejection', (reason) => {
   if (engine) engine.reportDiagnostic('unhandledRejection', err.message, { stack: err.stack });
 });
 
+// --------------------------------------------------------------------------
+// auto-update
+// --------------------------------------------------------------------------
+const sendUpdateStatus = (m) => {
+  if (win && !win.isDestroyed()) win.webContents.send('pqmsg:update-status', m);
+};
+
+/**
+ * Background update for Windows + Linux (AppImage). electron-updater reads
+ * the latest.yml feed attached to the GitHub Release, downloads the new
+ * installer, verifies its SHA-512, and installs on quit. macOS is excluded:
+ * Squirrel.Mac refuses to apply an unsigned update, so mac uses the
+ * download-and-open fallback below instead. `.deb` installs surface an error
+ * that we swallow (the version banner still nudges them).
+ */
+function setupAutoUpdate() {
+  if (process.platform === 'darwin') return;
+  if (!app.isPackaged || process.env.PQMSG_NO_AUTOUPDATE === '1') return;
+  autoUpdater.autoDownload = true;
+  autoUpdater.autoInstallOnAppQuit = true;
+  autoUpdater.on('update-available', (i) => sendUpdateStatus({ phase: 'downloading', version: i.version, percent: 0 }));
+  autoUpdater.on('download-progress', (p) => sendUpdateStatus({ phase: 'downloading', percent: Math.round(p.percent || 0) }));
+  autoUpdater.on('update-downloaded', (i) => sendUpdateStatus({ phase: 'ready', version: i.version }));
+  autoUpdater.on('error', (e) => {
+    console.error('[autoupdate]', (e && e.message) || e);
+    if (engine) engine.reportDiagnostic('autoupdate-error', (e && e.message) || 'unknown');
+  });
+  const check = () => autoUpdater.checkForUpdates().catch(() => {});
+  setTimeout(check, 8000); // let the window settle first
+  setInterval(check, 3 * 3600 * 1000).unref();
+}
+
+function getJson(url) {
+  return new Promise((resolve, reject) => {
+    https
+      .get(url, { headers: { 'User-Agent': 'pqmsg', Accept: 'application/vnd.github+json' } }, (res) => {
+        if (res.statusCode >= 300 && res.statusCode < 400 && res.headers.location) {
+          res.resume();
+          return getJson(res.headers.location).then(resolve, reject);
+        }
+        if (res.statusCode !== 200) { res.resume(); return reject(new Error('HTTP ' + res.statusCode)); }
+        let body = '';
+        res.setEncoding('utf8');
+        res.on('data', (c) => (body += c));
+        res.on('end', () => { try { resolve(JSON.parse(body)); } catch (e) { reject(e); } });
+      })
+      .on('error', reject);
+  });
+}
+
+function downloadFile(url, destPath, onProgress) {
+  return new Promise((resolve, reject) => {
+    const file = fs.createWriteStream(destPath);
+    const get = (u) =>
+      https.get(u, { headers: { 'User-Agent': 'pqmsg' } }, (res) => {
+        if (res.statusCode >= 300 && res.statusCode < 400 && res.headers.location) {
+          res.resume();
+          return get(res.headers.location);
+        }
+        if (res.statusCode !== 200) { res.resume(); file.close(); fs.unlink(destPath, () => {}); return reject(new Error('HTTP ' + res.statusCode)); }
+        const total = parseInt(res.headers['content-length'] || '0', 10);
+        let done = 0;
+        res.on('data', (c) => { done += c.length; if (total && onProgress) onProgress(Math.round((done / total) * 100)); });
+        res.pipe(file);
+        file.on('finish', () => file.close(() => resolve(destPath)));
+      });
+    get(url).on('error', (e) => { file.close(); fs.unlink(destPath, () => {}); reject(e); });
+  });
+}
+
+/** Fallback path (macOS, .deb, or auto-update failure): fetch the right
+ *  installer from the latest release into Downloads and open it. */
+async function downloadLatestInstaller(onProgress) {
+  const rel = await getJson(`https://api.github.com/repos/${REPO}/releases/latest`);
+  const assets = rel.assets || [];
+  let want;
+  if (process.platform === 'darwin') {
+    const dmgs = assets.filter((a) => a.name.endsWith('.dmg'));
+    want = process.arch === 'arm64'
+      ? dmgs.find((a) => /arm64/.test(a.name)) || dmgs[0]
+      : dmgs.find((a) => !/arm64/.test(a.name)) || dmgs[0];
+  } else if (process.platform === 'win32') {
+    want = assets.find((a) => /-setup\.exe$/.test(a.name));
+  } else {
+    want = assets.find((a) => a.name.endsWith('.AppImage'));
+  }
+  if (!want) throw new Error('no matching installer in the latest release');
+  const dest = path.join(app.getPath('downloads'), want.name);
+  await downloadFile(want.browser_download_url, dest, onProgress);
+  return { name: want.name, path: dest, version: rel.tag_name };
+}
+
 // one running client per machine, except in dev where PQMSG_PROFILE lets you
 // run several (alice / bob) side by side
 if (app.isPackaged && !app.requestSingleInstanceLock()) {
@@ -209,6 +305,7 @@ app.whenReady().then(async () => {
   engine = new Engine(PROFILE, app.getPath('userData'), app.getVersion());
   await engine.resume();
   createWindow();
+  setupAutoUpdate();
 
   const H = (channel, fn) =>
     ipcMain.handle(channel, async (_e, arg) => {
@@ -256,6 +353,16 @@ app.whenReady().then(async () => {
   H('pqmsg:contact', (a) => engine.refreshContact(a.username, true));
   H('pqmsg:openExternal', (a) => {
     if (/^https?:\/\//.test(a.url || '')) shell.openExternal(a.url);
+  });
+  H('pqmsg:installUpdate', () => {
+    setImmediate(() => autoUpdater.quitAndInstall());
+    return { ok: true };
+  });
+  H('pqmsg:downloadUpdate', async () => {
+    const r = await downloadLatestInstaller((percent) => sendUpdateStatus({ phase: 'downloading', percent, manual: true }));
+    await shell.openPath(r.path); // mounts the .dmg / launches the installer / opens the AppImage
+    sendUpdateStatus({ phase: 'manual-ready', name: r.name, version: r.version });
+    return r;
   });
 
   app.on('activate', () => {

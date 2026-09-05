@@ -89,24 +89,68 @@ $('in-code').addEventListener('keydown', (e) => e.key === 'Enter' && $('btn-2fa'
 
 
 // ---------- update prompts ----------
-$('ur-btn').onclick = () => state && state.updateGate && window.pqmsg.openExternal(state.updateGate.downloadUrl);
-$('ub-btn').onclick = () => state && state.updateInfo && window.pqmsg.openExternal(state.updateInfo.downloadUrl);
+// ---------- updates ----------
+let updateStatus = null; // { phase:'downloading'|'ready'|'manual-ready', percent, version, name }
+
+window.pqmsg.onUpdateStatus((m) => { updateStatus = m; try { sessionStorage.removeItem('ub-dismissed'); } catch {} render(); });
+
 $('ub-x').onclick = () => {
   try { sessionStorage.setItem('ub-dismissed', '1'); } catch {}
   $('update-banner').hidden = true;
 };
 
+async function runManualDownload(btn) {
+  if (btn) { btn.disabled = true; btn.textContent = 'downloading…'; }
+  const r = await window.pqmsg.downloadUpdate();
+  if (btn) btn.disabled = false;
+  if (!r.ok) { $('ub-text').textContent = 'download failed — ' + esc(r.error) + '. '; if (btn) btn.textContent = 'retry'; }
+}
+
 function renderUpdate(s) {
   const g = s.updateGate;
+  const isMac = s.platform === 'darwin';
   $('update-required').hidden = !g;
   if (g) {
     $('ur-text').textContent = `You're running pqmsg ${g.current}. This ${g.source === 'server' ? 'server' : 'network'} requires ${g.required} or newer.`;
+    $('ur-btn').textContent = updateStatus && updateStatus.phase === 'ready' ? 'restart & install' : 'download the update';
+    $('ur-btn').onclick = () => {
+      if (updateStatus && updateStatus.phase === 'ready') return window.pqmsg.installUpdate();
+      runManualDownload($('ur-btn'));
+    };
   }
+
   let dismissed = false;
   try { dismissed = sessionStorage.getItem('ub-dismissed') === '1'; } catch {}
-  const showBanner = !g && s.updateInfo && !dismissed;
-  $('update-banner').hidden = !showBanner;
-  if (showBanner) $('ub-text').textContent = `pqmsg ${s.updateInfo.latest} is available (you have ${s.appVersion}).`;
+  const haveNews = updateStatus || (s.updateInfo && !dismissed);
+  $('update-banner').hidden = !!g || !haveNews;
+  if ($('update-banner').hidden) return;
+
+  const btn = $('ub-btn');
+  btn.hidden = false;
+  const us = updateStatus;
+  if (us && us.phase === 'downloading') {
+    $('ub-text').textContent = `Downloading update${us.percent != null ? ' — ' + us.percent + '%' : '…'}`;
+    btn.hidden = true;
+  } else if (us && us.phase === 'ready') {
+    $('ub-text').textContent = `Update ${us.version ? 'to ' + esc(us.version) + ' ' : ''}downloaded.`;
+    btn.textContent = 'restart & install';
+    btn.onclick = () => window.pqmsg.installUpdate();
+  } else if (us && us.phase === 'manual-ready') {
+    $('ub-text').textContent = `${esc(us.name || 'The installer')} is in your Downloads folder — open it to finish updating.`;
+    btn.textContent = 'open again';
+    btn.onclick = () => window.pqmsg.downloadUpdate();
+  } else {
+    $('ub-text').textContent = `pqmsg ${s.updateInfo ? esc(s.updateInfo.latest) : ''} is available (you have ${esc(s.appVersion)}).`;
+    if (isMac) {
+      btn.textContent = 'download';
+      btn.onclick = () => runManualDownload(btn);
+    } else {
+      // Windows / Linux: the background updater will fetch it on its own;
+      // this is just the manual nudge / .deb path.
+      btn.textContent = 'update now';
+      btn.onclick = () => runManualDownload(btn);
+    }
+  }
 }
 
 // ---------- new conversation / group (one tokenised "to:" field) ----------
