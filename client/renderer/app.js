@@ -658,36 +658,71 @@ function scrollToMsg(msgId) {
   }
 }
 
-// Two-finger horizontal swipe *toward the centre* of the thread = reply.
-// A trackpad two-finger swipe arrives as wheel events with deltaX; we
-// accumulate it briefly and fire once past a threshold in the inward
-// direction (leftward for your own right-aligned bubbles, rightward for
-// the other person's left-aligned ones).
+// Two-finger horizontal swipe of a bubble *toward the centre of the thread*
+// arms a reply to it. The other person's (left-aligned) bubbles are pulled
+// gently RIGHT; your own (right-aligned) bubbles are pulled LEFT. Trackpad
+// swipes arrive as `wheel` events; on macOS natural scrolling, fingers-right
+// is a negative deltaX and fingers-left a positive one.
+const SWIPE_ARM = 54; // px of intent before it fires (deliberate, not a brush)
+const SWIPE_MAX = 20; // largest visual tug
 function attachSwipeToReply(el, m) {
-  let acc = 0;
-  let t0 = 0;
-  const inward = m.mine ? -1 : 1; // sign of deltaX that moves toward centre
+  // grows only while swiping toward the centre for THIS bubble's side
+  const dirFactor = m.mine ? 1 : -1;       // deltaX sign that counts as "inward"
+  const tugSign = m.mine ? -1 : 1;         // screen-space direction of the tug
+  let intent = 0;
+  let armed = false;
+  let endTimer = null;
+  let dragging = false;
+
+  const springBack = () => {
+    endTimer = null;
+    dragging = false;
+    armed = false;
+    intent = 0;
+    el.style.transition = 'transform .2s ease-out, opacity .2s ease-out';
+    el.style.transform = '';
+    el.style.opacity = '';
+    const clear = () => { el.style.transition = ''; el.removeEventListener('transitionend', clear); };
+    el.addEventListener('transitionend', clear);
+  };
+
   el.addEventListener(
     'wheel',
     (e) => {
-      if (Math.abs(e.deltaX) < Math.abs(e.deltaY)) return; // vertical scroll, ignore
-      const now = Date.now();
-      if (now - t0 > 300) acc = 0;
-      t0 = now;
-      acc += e.deltaX;
-      const progress = Math.max(0, Math.min(1, (acc * inward) / 90));
-      el.style.transform = progress > 0 ? `translateX(${inward * progress * 22}px)` : '';
-      el.style.opacity = progress > 0 ? String(1 - progress * 0.25) : '';
-      if (acc * inward > 90) {
-        acc = 0;
-        el.style.transform = '';
-        el.style.opacity = '';
-        setReplyTarget({ msgId: m.msgId, who: m.mine ? 'You' : m.sender, textPreview: m.text || (m.attachment ? '📎 ' + m.attachment.name : '') });
+      const horizontal = Math.abs(e.deltaX) > Math.abs(e.deltaY);
+      // a clearly-vertical wheel: let it scroll, and bail out of any swipe
+      if (Math.abs(e.deltaY) > Math.abs(e.deltaX) * 2) {
+        if (dragging) { clearTimeout(endTimer); springBack(); }
+        return;
       }
+      if (!dragging && !horizontal) return;
+      e.preventDefault(); // don't also pan / rubber-band the thread
+
+      if (!dragging) {
+        dragging = true;
+        el.style.transition = 'none'; // follow the finger 1:1, no chase/jiggle
+      }
+      intent += e.deltaX * dirFactor;
+      if (intent < 0) intent = 0;
+
+      const shown = Math.min(SWIPE_MAX, intent * 0.6); // a little resistance
+      el.style.transform = shown ? `translateX(${tugSign * shown}px)` : '';
+      el.style.opacity = shown ? String(1 - (shown / SWIPE_MAX) * 0.12) : '';
+
+      if (!armed && intent >= SWIPE_ARM) {
+        armed = true;
+        setReplyTarget({
+          msgId: m.msgId,
+          who: m.mine ? 'You' : m.sender,
+          textPreview: m.text || (m.attachment ? '📎 ' + m.attachment.name : ''),
+        });
+      }
+      clearTimeout(endTimer);
+      endTimer = setTimeout(springBack, 90); // gesture ended -> ease home
     },
-    { passive: true }
+    { passive: false }
   );
-  el.addEventListener('mouseleave', () => { acc = 0; el.style.transform = ''; el.style.opacity = ''; });
+  el.addEventListener('mouseleave', () => { if (dragging) { clearTimeout(endTimer); springBack(); } });
 }
 
 function selectConv(id) {

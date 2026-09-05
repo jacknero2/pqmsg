@@ -1,8 +1,14 @@
 'use strict';
 const path = require('path');
 const fs = require('fs');
-const { app, BrowserWindow, ipcMain, shell, dialog } = require('electron');
+const { app, BrowserWindow, ipcMain, shell, dialog, nativeImage } = require('electron');
 const { Engine } = require('./engine');
+
+// Photos straight off a phone are multi-MB and there is no reason to send a
+// chat attachment at full sensor resolution. Anything bigger than this, or
+// wider/taller than MAX_EDGE, is re-encoded down before it goes on the wire.
+const IMG_SHRINK_OVER = 900 * 1024;
+const IMG_MAX_EDGE = 2048;
 
 const IMAGE_EXT = new Set(['.png', '.jpg', '.jpeg', '.gif', '.webp', '.bmp', '.svg', '.avif']);
 const MIME = {
@@ -13,23 +19,49 @@ const MIME = {
   '.doc': 'application/msword', '.docx': 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
   '.csv': 'text/csv',
 };
+/** Downscale + re-encode a large raster image so it fits comfortably on the wire. */
+function shrinkImage(buf, ext) {
+  if (ext === '.svg' || ext === '.gif') return null; // vector / animation — leave alone
+  try {
+    let img = nativeImage.createFromBuffer(buf);
+    if (img.isEmpty()) return null;
+    const { width, height } = img.getSize();
+    const longEdge = Math.max(width, height);
+    const needsResize = longEdge > IMG_MAX_EDGE;
+    if (needsResize) {
+      img = img.resize(width >= height ? { width: IMG_MAX_EDGE } : { height: IMG_MAX_EDGE });
+    }
+    const out = img.toJPEG(82);
+    if (out && out.length && out.length < buf.length) {
+      return { buf: out, mime: 'image/jpeg', ext: '.jpg' };
+    }
+  } catch {}
+  return null;
+}
+
 /** Pick a file, read it, hand the renderer a base64 blob for encryption. */
 async function pickFileForSend() {
   const r = await dialog.showOpenDialog(win, { properties: ['openFile'], title: 'attach a file' });
   if (r.canceled || !r.filePaths[0]) return null;
   const p = r.filePaths[0];
-  const stat = fs.statSync(p);
-  if (stat.size > Engine.MAX_ATTACHMENT) {
-    throw new Error(`file too large — ${(stat.size / 1048576).toFixed(1)} MB, limit is ${Engine.MAX_ATTACHMENT / 1048576} MB`);
+  let ext = path.extname(p).toLowerCase();
+  let buf = fs.readFileSync(p);
+  let name = path.basename(p);
+  let mime = MIME[ext] || 'application/octet-stream';
+  const isImage = IMAGE_EXT.has(ext);
+
+  if (isImage && buf.length > IMG_SHRINK_OVER) {
+    const s = shrinkImage(buf, ext);
+    if (s) {
+      buf = s.buf;
+      mime = s.mime;
+      name = name.replace(/\.[^.]+$/, '') + s.ext;
+    }
   }
-  const ext = path.extname(p).toLowerCase();
-  return {
-    name: path.basename(p),
-    mime: MIME[ext] || 'application/octet-stream',
-    size: stat.size,
-    isImage: IMAGE_EXT.has(ext),
-    dataB64: fs.readFileSync(p).toString('base64'),
-  };
+  if (buf.length > Engine.MAX_ATTACHMENT) {
+    throw new Error(`file too large — ${(buf.length / 1048576).toFixed(1)} MB, limit is ${Engine.MAX_ATTACHMENT / 1048576} MB`);
+  }
+  return { name, mime, size: buf.length, isImage, dataB64: buf.toString('base64') };
 }
 /** Save a received attachment straight into the OS Downloads folder. */
 function saveToDownloads({ name, dataB64 }) {

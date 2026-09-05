@@ -886,13 +886,17 @@ class Engine extends EventEmitter {
         if (e.status && e.status >= 400 && e.status < 500) {
           const conv = this.store.loadConversation(item.convId);
           const rec = conv && (conv.messages[item.msgId] || (conv.controlMsgs && conv.controlMsgs[item.msgId]));
+          const friendly =
+            e.status === 413
+              ? 'file too large for this server (it may need updating) — try a smaller image'
+              : e.message;
           if (rec) {
             rec.state = 'failed';
-            rec.error = e.message;
+            rec.error = friendly;
           }
           if (e.message === 'blocked' && conv) conv.blockedByPeer = true;
           if (conv) this.store.saveConversation(conv);
-          this.event('send-failed', { convId: item.convId, msgId: item.msgId, error: e.message });
+          this.event('send-failed', { convId: item.convId, msgId: item.msgId, error: friendly });
         } else {
           keep.push(item); // transient — retry next cycle
         }
