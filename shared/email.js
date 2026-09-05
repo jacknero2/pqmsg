@@ -16,11 +16,11 @@ try {
   nodemailer = require('nodemailer');
 } catch {}
 
-// SMTP connections that can't complete (e.g. the provider silently drops
-// outbound port 587) would otherwise hang forever with no error — this is
-// exactly what happens on cloud VPS providers that block it by default.
-// Fail fast instead so the caller gets a real error, not an infinite spinner.
-const SMTP_TIMEOUT_MS = 10_000;
+// A connection that can't complete (e.g. a provider silently dropping
+// outbound port 587, or a stalled HTTPS request) would otherwise hang forever
+// with no error. Fail fast instead so the caller gets a real error, not an
+// infinite spinner — applies to both transports below.
+const EMAIL_TIMEOUT_MS = 10_000;
 
 function createSmtpMailer(cfg) {
   const from = cfg.smtpFrom || cfg.smtpUser || 'pqmsg <no-reply@pqmsg.local>';
@@ -29,9 +29,9 @@ function createSmtpMailer(cfg) {
     port: Number(cfg.smtpPort) || 587,
     secure: !!cfg.smtpSecure || Number(cfg.smtpPort) === 465,
     auth: cfg.smtpUser ? { user: cfg.smtpUser, pass: cfg.smtpPass } : undefined,
-    connectionTimeout: SMTP_TIMEOUT_MS,
-    greetingTimeout: SMTP_TIMEOUT_MS,
-    socketTimeout: SMTP_TIMEOUT_MS,
+    connectionTimeout: EMAIL_TIMEOUT_MS,
+    greetingTimeout: EMAIL_TIMEOUT_MS,
+    socketTimeout: EMAIL_TIMEOUT_MS,
   });
   return {
     mode: 'smtp',
@@ -61,6 +61,7 @@ function createResendMailer(cfg) {
         method: 'POST',
         headers: { authorization: `Bearer ${apiKey}`, 'content-type': 'application/json' },
         body: JSON.stringify({ from, to, subject, text }),
+        signal: AbortSignal.timeout(EMAIL_TIMEOUT_MS),
       });
       if (!res.ok) {
         const body = await res.json().catch(() => ({}));
