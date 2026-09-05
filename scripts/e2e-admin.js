@@ -86,6 +86,64 @@ async function waitHealth(url) {
     bad('email provider selection', e);
   }
 
+  // Regression test for a real bug caught live: sendCode() in index.js only
+  // checked `mailer.mode === 'smtp'`, so a correctly-configured Resend mailer
+  // was silently skipped in favor of the dev fallback — createMailer() alone
+  // never caught this since the bug was in the *caller*, not the mailer.
+  // Needs its own process: config/mailer are module-level singletons, so a
+  // second startServer() in this same process cannot get a different config.
+  console.log('\n── sendCode actually calls a non-SMTP provider too ──');
+  try {
+    const rPort = PORT + 1;
+    const rDir = path.join(TMP, 'resend-srv');
+    const childCode = `
+      const path = require('path');
+      global.fetch = async (url, opts) => {
+        if (String(url).includes('api.resend.com')) {
+          process.stdout.write('MOCK_FETCH_CALLED ' + url + '\\n');
+          return { ok: true, json: async () => ({ id: 'email_1' }) };
+        }
+        throw new Error('unexpected fetch to ' + url);
+      };
+      process.env.PQMSG_PORT = '${rPort}';
+      process.env.PQMSG_HOST = '127.0.0.1';
+      process.env.PQMSG_DATA_DIR = ${JSON.stringify(rDir)};
+      process.env.PQMSG_PUBLIC = '1';
+      process.env.PQMSG_PUBLIC_URL = 'http://127.0.0.1:${rPort}';
+      process.env.PQMSG_EMAIL_PROVIDER = 'resend';
+      process.env.PQMSG_RESEND_API_KEY = 'test_key_123';
+      process.env.PQMSG_RESEND_FROM = 'pqmsg <test@example.com>';
+      require(${JSON.stringify(path.join(__dirname, '..', 'server', 'src', 'index.js'))})
+        .startServer({ quiet: true }).then(() => console.log('UP')).catch((e) => { console.error(e); process.exit(1); });
+    `;
+    const { spawn } = require('child_process');
+    const child = spawn(process.execPath, ['-e', childCode], { stdio: ['ignore', 'pipe', 'pipe'] });
+    let out = '';
+    child.stdout.on('data', (d) => (out += d));
+    child.stderr.on('data', (d) => (out += d));
+    const R = `http://127.0.0.1:${rPort}`;
+    await new Promise((resolve, reject) => {
+      const timer = setTimeout(() => reject(new Error('resend test server did not start')), 8000);
+      child.stdout.on('data', (d) => {
+        if (String(d).includes('UP')) {
+          clearTimeout(timer);
+          resolve();
+        }
+      });
+    });
+    try {
+      await J('POST', R + '/api/auth/register', { username: 'reguser', email: 'reguser@test.local', password: 'hunter22' });
+      const login = await J('POST', R + '/api/auth/login', { username: 'reguser', password: 'hunter22' });
+      assert.strictEqual(login.j.dev, false, 'with a working Resend mailer configured, sendCode reports a real send (dev:false), not the console fallback');
+      assert.ok(out.includes('MOCK_FETCH_CALLED https://api.resend.com/emails'), 'sendCode actually invoked the Resend transport, not just createMailer() in isolation');
+      ok('sendCode() correctly calls a configured non-SMTP provider instead of silently falling back to dev mode');
+    } finally {
+      child.kill();
+    }
+  } catch (e) {
+    bad('sendCode + non-SMTP provider integration', e);
+  }
+
   const { startServer } = require('../server/src/index.js');
   await startServer({ quiet: true });
   await waitHealth(A);

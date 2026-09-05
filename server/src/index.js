@@ -56,7 +56,7 @@ function recordDevCode(id, code) {
 }
 
 async function sendCode({ id, code, to, subject }) {
-  if (mailer.mode === 'smtp') {
+  if (mailer.mode !== 'dev') {
     await mailer.send({ to, subject, text: `Your pqmsg verification code is ${code}\n\nIt expires in 10 minutes. If you did not request this, ignore this email.` });
     return { dev: false };
   }
