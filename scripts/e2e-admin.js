@@ -43,6 +43,49 @@ async function waitHealth(url) {
 }
 
 (async () => {
+  console.log('\n── email providers (SMTP default, Resend fallback) ──');
+  try {
+    const { createMailer } = require('../shared/email');
+
+    const noConfig = createMailer({});
+    assert.strictEqual(noConfig.mode, 'dev', 'no provider configured -> dev fallback');
+
+    const smtpDefault = createMailer({ smtpHost: 'smtp.example.com', smtpUser: 'a@b.com' });
+    assert.strictEqual(smtpDefault.mode, 'smtp', 'smtp configured, no emailProvider set -> defaults to smtp');
+
+    const explicitSmtp = createMailer({ emailProvider: 'smtp', smtpHost: 'smtp.example.com' });
+    assert.strictEqual(explicitSmtp.mode, 'smtp', 'emailProvider=smtp uses smtp');
+
+    const resendWithoutKey = createMailer({ emailProvider: 'resend', smtpHost: 'smtp.example.com' });
+    assert.strictEqual(resendWithoutKey.mode, 'smtp', 'emailProvider=resend but no key -> falls back to smtp if configured');
+
+    const resendConfigured = createMailer({ emailProvider: 'resend', resendApiKey: 'key_123', resendFrom: 'pqmsg <hi@example.com>' });
+    assert.strictEqual(resendConfigured.mode, 'resend', 'emailProvider=resend + api key -> resend mode');
+
+    const realFetch = global.fetch;
+    const calls = [];
+    global.fetch = async (url, opts) => {
+      calls.push({ url, opts });
+      return { ok: true, json: async () => ({ id: 'email_1' }) };
+    };
+    try {
+      await resendConfigured.send({ to: 'user@test.local', subject: 'code', text: 'your code is 123456' });
+      assert.strictEqual(calls.length, 1);
+      assert.strictEqual(calls[0].url, 'https://api.resend.com/emails');
+      assert.strictEqual(calls[0].opts.headers.authorization, 'Bearer key_123');
+      const body = JSON.parse(calls[0].opts.body);
+      assert.deepStrictEqual(
+        [body.from, body.to, body.subject],
+        ['pqmsg <hi@example.com>', 'user@test.local', 'code']
+      );
+    } finally {
+      global.fetch = realFetch;
+    }
+    ok('createMailer: SMTP is the default, Resend only activates when explicitly selected and configured, and sends via the documented HTTPS API shape');
+  } catch (e) {
+    bad('email provider selection', e);
+  }
+
   const { startServer } = require('../server/src/index.js');
   await startServer({ quiet: true });
   await waitHealth(A);

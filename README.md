@@ -64,9 +64,13 @@ ML-KEM + ML-DSA is the construction Signal's PQXDH and Apple's iMessage PQ3 use.
 ### Identity & login
 
 - Register with a **username, password and email**. Login is two steps:
-  password → a 6-digit code emailed to that address → session token. SMTP is
-  configured on the server; with no SMTP the code is shown in the server
-  console (dev fallback). "Remember this device" issues a signed 30-day token
+  password → a 6-digit code emailed to that address → session token. Email
+  delivery is SMTP by default (an account you already control, no third party
+  in the code-delivery path) — with no SMTP or provider configured, the code
+  is shown in the server console (dev fallback). If the host blocks outbound
+  SMTP (common on cloud VPS providers as an anti-spam default — see DEPLOY.md),
+  set `PQMSG_EMAIL_PROVIDER=resend` to send over Resend's HTTPS API instead,
+  no code changes needed. "Remember this device" issues a signed 30-day token
   that skips the code on that machine, and the session itself is good for 7
   days idle — closing the app doesn't require logging in again.
 - On first login the client generates its **ML-KEM-1024** and **ML-DSA-87**
@@ -182,7 +186,9 @@ npm run e2e:admin   # master login/2FA/forgot-password, session-token auth, usag
 
 Useful env: `PQMSG_PUBLIC=1` (required for any internet-facing server),
 `PQMSG_PUBLIC_URL` (the https URL clients use), `PQMSG_SMTP_*` (send real 2FA
-emails), `PQMSG_MIN_CLIENT`/`PQMSG_LATEST_CLIENT` (version floor),
+emails via SMTP, the default) or `PQMSG_EMAIL_PROVIDER=resend` +
+`PQMSG_RESEND_API_KEY`/`PQMSG_RESEND_FROM` (via Resend's HTTPS API instead,
+for hosts that block outbound SMTP), `PQMSG_MIN_CLIENT`/`PQMSG_LATEST_CLIENT` (version floor),
 `PQMSG_SEND_DIAGNOSTICS`/`PQMSG_DIAG_TOKEN`/`PQMSG_DIAG_REPO` (error reporting),
 `PQMSG_MASTER_EMAIL` (who the dashboard's 2FA codes go to, default
 `jnero@nd.edu`), `STORE_BACKEND=github` (commit the encrypted store to a repo

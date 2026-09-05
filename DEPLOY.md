@@ -74,6 +74,23 @@ If the hostname is `chat.jacknero.com`, packaged clients already point there —
 nothing else to configure. Deploying under a different hostname means also
 changing `SERVER_URL` in `client/main/engine.js` and cutting a new client release.
 
+### A note on email (2FA codes) on a cloud VPS
+
+Most cloud VPS providers (DigitalOcean, Hetzner, AWS, etc.) **block outbound
+SMTP ports by default** as an anti-spam measure — if you configure
+`PQMSG_SMTP_*`, requests that try to send a 2FA code will hang and time out
+rather than fail cleanly. Check before you're surprised by it:
+
+```bash
+timeout 10 bash -c "echo > /dev/tcp/smtp.gmail.com/587" && echo CONNECTED || echo "BLOCKED/TIMED OUT"
+```
+
+If it's blocked, either ask your provider's support to lift the restriction
+for your account (usually resolved within a day), or skip the wait entirely
+by setting `PQMSG_EMAIL_PROVIDER=resend` — an HTTPS API (port 443, never
+port-blocked) that works immediately. See `.env.example` for the Resend
+variables.
+
 ### Storage on a cloud host
 
 - Default `local` backend writes to `PQMSG_DATA_DIR` (default `./server-data`).

@@ -806,8 +806,9 @@ function setServerInfo(patch = {}) {
   if (patch.sendDiagnostics !== undefined) config.sendDiagnostics = patch.sendDiagnostics;
   if (patch.diagToken !== undefined) config.diagToken = patch.diagToken;
   if (patch.diagRepo !== undefined) config.diagRepo = patch.diagRepo;
-  if (['smtpHost', 'smtpPort', 'smtpUser', 'smtpPass', 'smtpFrom', 'smtpSecure'].some((k) => patch[k] !== undefined)) {
-    for (const k of ['smtpHost', 'smtpPort', 'smtpUser', 'smtpPass', 'smtpFrom', 'smtpSecure']) {
+  const EMAIL_KEYS = ['emailProvider', 'smtpHost', 'smtpPort', 'smtpUser', 'smtpPass', 'smtpFrom', 'smtpSecure', 'resendApiKey', 'resendFrom'];
+  if (EMAIL_KEYS.some((k) => patch[k] !== undefined)) {
+    for (const k of EMAIL_KEYS) {
       if (patch[k] !== undefined) config[k] = patch[k];
     }
     mailer = createMailer(config);

@@ -40,13 +40,20 @@ const config = {
   latestClient: process.env.PQMSG_LATEST_CLIENT || '', // newest known; clients below get a soft nag
   clientDownloadUrl: process.env.PQMSG_DOWNLOAD_URL || 'https://jacknero2.github.io/pqmsg/',
 
-  // --- email 2FA on login (SMTP via nodemailer; dev fallback if unset) ---
+  // --- email 2FA on login: SMTP (default) or Resend, dev fallback if neither
+  // is configured. SMTP uses an account you already control, no third party
+  // in the code-delivery path; Resend is an HTTPS-API fallback for hosts that
+  // block outbound SMTP ports (common on cloud VPS providers by default) —
+  // set PQMSG_EMAIL_PROVIDER=resend to switch, no code changes needed.
+  emailProvider: (process.env.PQMSG_EMAIL_PROVIDER || 'smtp').toLowerCase(),
   smtpHost: process.env.PQMSG_SMTP_HOST || '',
   smtpPort: process.env.PQMSG_SMTP_PORT || '587',
   smtpUser: process.env.PQMSG_SMTP_USER || '',
   smtpPass: process.env.PQMSG_SMTP_PASS || '',
   smtpFrom: process.env.PQMSG_SMTP_FROM || '',
   smtpSecure: /^(1|true|yes)$/i.test(process.env.PQMSG_SMTP_SECURE || ''),
+  resendApiKey: process.env.PQMSG_RESEND_API_KEY || '',
+  resendFrom: process.env.PQMSG_RESEND_FROM || '',
   trustedDeviceDays: parseInt(process.env.PQMSG_TRUST_DAYS || '30', 10),
 
   // --- diagnostics: best-effort error reporting to a GitHub repo the operator
