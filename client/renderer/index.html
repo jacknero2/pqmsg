@@ -2,7 +2,7 @@
 <html lang="en">
   <head>
     <meta charset="UTF-8" />
-    <meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self'; style-src 'self';" />
+    <meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self' data:;" />
     <title>pqmsg</title>
     <link rel="stylesheet" href="styles.css" />
   </head>
@@ -92,6 +92,7 @@
           <div id="messages"></div>
           <div id="composer-chrome" hidden></div>
           <form id="composer" hidden>
+            <button id="btn-attach" class="ghost" type="button" title="attach a file">📎</button>
             <input id="in-msg" placeholder="type a message…" autocomplete="off" />
             <button class="primary" type="submit">send</button>
           </form>

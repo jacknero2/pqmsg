@@ -265,6 +265,20 @@ $('in-msg').addEventListener('keydown', (e) => {
   if (e.key === 'Escape') { $('in-msg').value = editTarget ? '' : $('in-msg').value; clearComposerTargets(); }
 });
 
+// ---------- attachments ----------
+$('btn-attach').onclick = async () => {
+  if (!activeConv) return;
+  const pick = await window.pqmsg.pickFile();
+  if (!pick.ok) { logLine(`<span class="r">attach: ${esc(pick.error)}</span>`); return; }
+  if (!pick.data) return; // user cancelled
+  const caption = $('in-msg').value.trim();
+  const replyTo = replyTarget ? replyTarget.msgId : undefined;
+  $('in-msg').value = '';
+  clearComposerTargets();
+  const r = await window.pqmsg.sendAttachment(activeConv, pick.data, { caption, replyTo });
+  if (!r.ok) logLine(`<span class="r">send error: ${esc(r.error)}</span>`);
+};
+
 // ---------- message context menu + emoji picker ----------
 function closeMenus() {
   document.querySelectorAll('.ctx-menu, .emoji-pop').forEach((n) => n.remove());
@@ -454,11 +468,18 @@ async function renderThread() {
 
     // right-click / ctrl-click -> context menu
     d.addEventListener('contextmenu', (e) => { e.preventDefault(); openMessageMenu(m, e.clientX, e.clientY); });
-    d.addEventListener('click', (e) => {
+    d.addEventListener('click', async (e) => {
       const jump = e.target.closest('.quote');
       if (jump && jump.dataset.jump) { scrollToMsg(jump.dataset.jump); return; }
       const chip = e.target.closest('.rechip');
       if (chip) { window.pqmsg.reactToMessage(activeConv, m.msgId, chip.dataset.emoji); return; }
+      const save = e.target.closest('[data-save]');
+      if (save && m.attachment && m.attachment.dataB64) {
+        const r = await window.pqmsg.saveAttachment(m.attachment.name, m.attachment.dataB64);
+        if (r.ok) logLine(`<span class="g">saved</span> ${esc(m.attachment.name)} → Downloads`);
+        else logLine(`<span class="r">save failed: ${esc(r.error)}</span>`);
+        return;
+      }
       if (e.ctrlKey || e.metaKey) { e.preventDefault(); openMessageMenu(m, e.clientX, e.clientY); }
     });
     attachSwipeToReply(d, m);

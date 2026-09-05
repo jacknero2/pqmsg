@@ -1,7 +1,51 @@
 'use strict';
 const path = require('path');
-const { app, BrowserWindow, ipcMain, shell } = require('electron');
+const fs = require('fs');
+const { app, BrowserWindow, ipcMain, shell, dialog } = require('electron');
 const { Engine } = require('./engine');
+
+const IMAGE_EXT = new Set(['.png', '.jpg', '.jpeg', '.gif', '.webp', '.bmp', '.svg', '.avif']);
+const MIME = {
+  '.png': 'image/png', '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg', '.gif': 'image/gif',
+  '.webp': 'image/webp', '.bmp': 'image/bmp', '.svg': 'image/svg+xml', '.avif': 'image/avif',
+  '.pdf': 'application/pdf', '.txt': 'text/plain', '.md': 'text/markdown', '.json': 'application/json',
+  '.zip': 'application/zip', '.mp4': 'video/mp4', '.mp3': 'audio/mpeg', '.wav': 'audio/wav',
+  '.doc': 'application/msword', '.docx': 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+  '.csv': 'text/csv',
+};
+/** Pick a file, read it, hand the renderer a base64 blob for encryption. */
+async function pickFileForSend() {
+  const r = await dialog.showOpenDialog(win, { properties: ['openFile'], title: 'attach a file' });
+  if (r.canceled || !r.filePaths[0]) return null;
+  const p = r.filePaths[0];
+  const stat = fs.statSync(p);
+  if (stat.size > Engine.MAX_ATTACHMENT) {
+    throw new Error(`file too large — ${(stat.size / 1048576).toFixed(1)} MB, limit is ${Engine.MAX_ATTACHMENT / 1048576} MB`);
+  }
+  const ext = path.extname(p).toLowerCase();
+  return {
+    name: path.basename(p),
+    mime: MIME[ext] || 'application/octet-stream',
+    size: stat.size,
+    isImage: IMAGE_EXT.has(ext),
+    dataB64: fs.readFileSync(p).toString('base64'),
+  };
+}
+/** Save a received attachment straight into the OS Downloads folder. */
+function saveToDownloads({ name, dataB64 }) {
+  const dir = app.getPath('downloads');
+  let target = path.join(dir, path.basename(name || 'file'));
+  if (fs.existsSync(target)) {
+    const ext = path.extname(target);
+    const base = target.slice(0, -ext.length || undefined);
+    let i = 1;
+    while (fs.existsSync(`${base} (${i})${ext}`)) i++;
+    target = `${base} (${i})${ext}`;
+  }
+  fs.writeFileSync(target, Buffer.from(dataB64, 'base64'));
+  shell.showItemInFolder(target);
+  return { path: target };
+}
 
 const PROFILE = process.env.PQMSG_PROFILE || 'default';
 let win;
@@ -93,6 +137,9 @@ app.whenReady().then(async () => {
   H('pqmsg:sendMessage', (a) => engine.sendMessage(a.convId, a.text, a.opts || {}));
   H('pqmsg:editMessage', (a) => engine.editMessage(a.convId, a.msgId, a.text));
   H('pqmsg:reactToMessage', (a) => engine.reactToMessage(a.convId, a.msgId, a.emoji));
+  H('pqmsg:pickFile', () => pickFileForSend());
+  H('pqmsg:sendAttachment', (a) => engine.sendAttachment(a.convId, a.file, a.opts || {}));
+  H('pqmsg:saveAttachment', (a) => saveToDownloads(a));
   H('pqmsg:getConversation', (a) => engine.getConversationView(a.convId));
   H('pqmsg:syncNow', () => engine.syncOnce('manual'));
   H('pqmsg:setSyncInterval', (a) => engine.setSyncInterval(a.ms));

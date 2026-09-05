@@ -31,6 +31,9 @@ const SERVER_URL = process.env.PQMSG_SERVER_URL || 'https://chat.jacknero.com';
 class Engine extends EventEmitter {
   constructor(profile, baseDir, appVersion) {
     super();
+    // one attachment must fit comfortably inside the server's JSON body
+    // limit once base64-expanded (+~33%) alongside the KEM slots.
+    this.MAX_ATTACHMENT = Engine.MAX_ATTACHMENT;
     this.store = new ClientStore(profile, baseDir);
     this.identity = this.store.loadIdentity();
     this.appVersion = appVersion || require('../../package.json').version;
@@ -671,6 +674,29 @@ class Engine extends EventEmitter {
     });
   }
 
+  /**
+   * Send a file (image or otherwise) as an attachment. The bytes travel
+   * inside the encrypted envelope body — the server never sees them in the
+   * clear, same as message text. Capped so one message stays well under
+   * the server's JSON body limit.
+   */
+  async sendAttachment(convId, file, opts = {}) {
+    const conv = this.store.loadConversation(convId);
+    if (!conv) throw new Error('unknown conversation');
+    const name = String(file.name || 'file');
+    const dataB64 = String(file.dataB64 || '');
+    const size = file.size || Buffer.from(dataB64, 'base64').length;
+    if (size > Engine.MAX_ATTACHMENT) {
+      throw new Error(`file too large — ${(size / 1048576).toFixed(1)} MB, limit is ${Engine.MAX_ATTACHMENT / 1048576} MB`);
+    }
+    const isImage = !!file.isImage || /^image\//.test(file.mime || '');
+    const caption = String(opts.caption || '');
+    const attachment = { name, mime: file.mime || 'application/octet-stream', size, isImage, dataB64 };
+    const body = { v: 1, kind: 'file', ...attachment, text: caption };
+    if (opts.replyTo) body.replyTo = this._replyStub(convId, opts.replyTo);
+    return this._sendBody(convId, body, { bubble: { text: caption, attachment, replyTo: body.replyTo || null } });
+  }
+
   /** Toggle an emoji reaction on any message in the conversation. */
   async reactToMessage(convId, targetId, emoji) {
     const conv = this.store.loadConversation(convId);
@@ -1070,6 +1096,7 @@ class Engine extends EventEmitter {
         replyTo: this._replyView(m.replyTo),
         attachment: m.attachment
           ? { name: m.attachment.name, mime: m.attachment.mime, size: m.attachment.size, isImage: !!m.attachment.isImage,
+              dataB64: m.attachment.dataB64 || null,
               dataUrl: m.attachment.isImage && m.attachment.dataB64 ? `data:${m.attachment.mime};base64,${m.attachment.dataB64}` : null }
           : null,
         canEdit: m.direction === 'out' && !m.locked && !m.attachment && m.text != null,
@@ -1117,5 +1144,7 @@ class Engine extends EventEmitter {
       .sort((a, b) => (b.lastAt || 0) - (a.lastAt || 0));
   }
 }
+
+Engine.MAX_ATTACHMENT = 12 * 1024 * 1024; // 12 MB raw -> ~16 MB base64
 
 module.exports = { Engine };

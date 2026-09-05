@@ -32,7 +32,9 @@ const PKG_VERSION = require('../../package.json').version;
 const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 
 const app = express();
-app.use(express.json({ limit: '4mb' }));
+// large enough for one ~12 MB attachment, base64-expanded, plus envelope +
+// per-recipient KEM slots. Bodies are still ciphertext only.
+app.use(express.json({ limit: '24mb' }));
 app.use((req, res, next) => {
   res.set('Access-Control-Allow-Origin', '*');
   res.set('Access-Control-Allow-Headers', 'Content-Type, Authorization, X-Admin-Token, X-PQMSG-Auth');

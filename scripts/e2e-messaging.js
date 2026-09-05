@@ -174,6 +174,39 @@ async function section(name, fn) {
   });
 
   // ---------------------------------------------------------------------
+  await section('attachments: image + arbitrary file travel encrypted, arrive whole', async () => {
+    const pngB64 =
+      'iVBORw0KGgoAAAANSUhEUgAAAAIAAAACCAYAAABytg0kAAAAEklEQVR42mP8z8BQz0AEYBxVSF8AGdEB/dnV0aoAAAAASUVORK5CYII=';
+    await alice.sendAttachment(cid, { name: 'pixel.png', mime: 'image/png', isImage: true, dataB64: pngB64, size: Buffer.from(pngB64, 'base64').length }, { caption: 'a tiny image' });
+    const bytes = Buffer.from('this is a plain text file, not an image\n'.repeat(50));
+    await alice.sendAttachment(cid, { name: 'notes.txt', mime: 'text/plain', isImage: false, dataB64: bytes.toString('base64'), size: bytes.length });
+    await sync(10);
+    const bv = bob.getConversationView(cid).messages;
+    const img = bv.find((m) => m.attachment && m.attachment.name === 'pixel.png');
+    assert.ok(img, 'bob got the image message');
+    assert.strictEqual(img.attachment.isImage, true);
+    assert.ok(img.attachment.dataUrl && img.attachment.dataUrl.startsWith('data:image/png;base64,'), 'image exposed as a data URL for preview');
+    assert.strictEqual(img.attachment.dataB64, pngB64, 'image bytes are byte-identical after the round trip');
+    assert.strictEqual(img.text, 'a tiny image', 'caption preserved');
+    const file = bv.find((m) => m.attachment && m.attachment.name === 'notes.txt');
+    assert.ok(file, 'bob got the file message');
+    assert.strictEqual(file.attachment.isImage, false);
+    assert.strictEqual(file.attachment.dataUrl, null, 'non-image has no preview URL');
+    assert.strictEqual(Buffer.from(file.attachment.dataB64, 'base64').toString(), bytes.toString(), 'file bytes intact');
+
+    // server stores only ciphertext
+    const raw = await (await fetch(`http://127.0.0.1:${PORT}/api/admin/conv/${cid}`, { headers: { 'X-Admin-Token': 'e2e-admin' } })).json();
+    assert.ok(!JSON.stringify(raw).includes('plain text file, not an image'), 'server never sees attachment plaintext');
+
+    let tooBig = false;
+    try {
+      await alice.sendAttachment(cid, { name: 'huge.bin', mime: 'application/octet-stream', dataB64: 'AA', size: 99 * 1024 * 1024 });
+    } catch { tooBig = true; }
+    assert.ok(tooBig, 'oversized attachment is rejected client-side');
+    ok('image + file attachments round-trip byte-exact inside the encrypted envelope, size-capped, ciphertext-only on the server');
+  });
+
+  // ---------------------------------------------------------------------
   await section('ordering stays canonical through a burst of mixed ops', async () => {
     for (let i = 1; i <= 5; i++) await (i % 2 ? alice : bob).sendMessage(cid, 'burst ' + i);
     await sync(10);
