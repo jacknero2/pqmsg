@@ -158,6 +158,66 @@ async function section(name, fn) {
   await until(async () => (await fetch(BASE + '/api/health').catch(() => null))?.ok, 5000);
   ok(`server up on ${BASE}`);
 
+  await section('switchAccount(): repeated back-and-forth against a real server', async () => {
+    process.env.PQMSG_SERVER_URL = BASE;
+    process.env.PQMSG_DATA_DIR = path.join(TMP, 'roundtrip');
+    delete require.cache[require.resolve('../client/main/engine')];
+    const { Engine } = require('../client/main/engine');
+
+    const e = new Engine('roundtrip', undefined, '0.1.0');
+    e.on('update', () => {});
+
+    const enroll = async (username) => {
+      await e.register({ username, email: `${username}@test.local`, password: 'hunter2222' });
+      const r = await e.login({ username, password: 'hunter2222', deviceName: username + '-dev' });
+      if (r.needs2fa) await e.completeLogin({ code: r.devCode, rememberDevice: false });
+      return e.identity.deviceId;
+    };
+    const login = async (username) => {
+      const r = await e.login({ username, password: 'hunter2222', deviceName: username + '-dev-again' });
+      if (r.needs2fa) await e.completeLogin({ code: r.devCode, rememberDevice: false });
+      return e.identity.deviceId;
+    };
+    const assertBlank = (label) => {
+      assert.strictEqual(e.identity, null, `${label}: identity cleared`);
+      assert.strictEqual(e.needsLogin, true, `${label}: needsLogin true`);
+      assert.deepStrictEqual(e.store.loadContacts(), {}, `${label}: no leftover cached contacts`);
+      assert.deepStrictEqual(e.store.listConversationIds(), [], `${label}: no leftover cached conversations`);
+    };
+
+    // round 1: alice
+    const aliceDevice1 = await enroll('rtalice');
+    assert.strictEqual(e.identity.username, 'rtalice');
+    e.switchAccount();
+    assertBlank('after switch #1');
+
+    // round 2: a different account on the same now-blank profile
+    const bobDevice = await enroll('rtbob');
+    assert.strictEqual(e.identity.username, 'rtbob', 'switching does not leave the old username bound');
+    assert.notStrictEqual(bobDevice, aliceDevice1, 'a fresh identity means a fresh device keypair');
+    e.switchAccount();
+    assertBlank('after switch #2');
+
+    // round 3: log back into the FIRST account by password — its server-side
+    // account still exists (only local state was wiped), so this should
+    // enroll a brand-new device for it rather than fail
+    const aliceDevice2 = await login('rtalice');
+    assert.strictEqual(e.identity.username, 'rtalice', 'can log back into a previously-used account after switching away from it');
+    assert.notStrictEqual(aliceDevice2, aliceDevice1, 'logging back in after a wipe enrolls a new device, not a resurrected old one');
+    e.switchAccount();
+    assertBlank('after switch #3');
+
+    // round 4: a third, never-before-seen account — repeated cycling doesn't degrade
+    await enroll('rtcarol');
+    assert.strictEqual(e.identity.username, 'rtcarol');
+    assert.strictEqual(e._resumeGen >= 3, true, 'generation counter keeps advancing across repeated switches');
+    e.switchAccount();
+    assertBlank('after switch #4');
+
+    ok('switchAccount() can be exercised back and forth repeatedly — different new accounts, and returning to a previously-used one — with no leftover state and no failures');
+  });
+  process.env.PQMSG_DATA_DIR = path.join(TMP, 'server'); // restore — later sections assume this points at the server's own data dir
+
   await section('Concurrent registration of the same username', async () => {
     const register = () =>
       fetch(BASE + '/api/auth/register', {
