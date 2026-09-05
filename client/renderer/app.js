@@ -5,6 +5,7 @@ const short = (s) => String(s || '').slice(0, 10);
 let state = null;
 let activeConv = null;
 let lastRenderKey = '';
+let lastUser = null; // detects a login/switch so a previous account's open thread doesn't linger on screen
 
 // ---------- login ----------
 $('btn-register').onclick = async () => {
@@ -216,6 +217,18 @@ window.pqmsg.onEvent((ev) => logLine(fmtEvent(ev)));
 function render() {
   if (!state) return;
   renderUpdate(state);
+  // A login/logout/switch-account changes which account's data is in view —
+  // without this, the previously open thread's DOM would keep showing (a
+  // stale render, not an actual leak: the new account's own store never
+  // held that data) until something else happened to redraw it.
+  if (state.username !== lastUser) {
+    lastUser = state.username;
+    activeConv = null;
+    lastRenderKey = '';
+    $('thread-head').innerHTML = '';
+    $('messages').innerHTML = '';
+    $('composer').hidden = true;
+  }
   const loggedIn = state.enrolled && !state.needsLogin;
   $('login').hidden = loggedIn;
   $('app').hidden = !loggedIn;
@@ -262,7 +275,17 @@ function render() {
 
 async function renderThread() {
   const r = await window.pqmsg.getConversation(activeConv);
-  if (!r.ok || !r.data) return;
+  if (!r.ok || !r.data) {
+    // convId no longer resolves for the account now in view (switched
+    // accounts, or the conversation is simply gone) — clear it instead of
+    // leaving whatever was drawn on screen before this call.
+    activeConv = null;
+    lastRenderKey = '';
+    $('thread-head').innerHTML = '';
+    $('messages').innerHTML = '';
+    $('composer').hidden = true;
+    return;
+  }
   const conv = r.data;
   const others = conv.participants.filter((p) => p !== '@' + state.username);
   const recon = conv.lastReconciledAt ? Math.round((Date.now() - conv.lastReconciledAt) / 1000) + 's ago' : '—';
