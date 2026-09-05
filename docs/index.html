@@ -37,7 +37,9 @@
           <div>
             <h3>macOS</h3>
             <p>Right-click the app in <em>Applications</em> → <strong>Open</strong> → <strong>Open</strong>. If it reports the app as damaged, run once in Terminal:</p>
-            <pre>xattr -cr "/Applications/pqmsg.app"</pre>
+            <pre>xattr -cr "/Applications/pqmsg.app"
+sudo codesign --force --deep --sign - "/Applications/pqmsg.app"</pre>
+            <p>The second line applies a local signature so macOS stops rejecting the app as unidentifiable — it asks for your Mac password, it does not send anything anywhere.</p>
           </div>
           <div>
             <h3>Windows</h3>
