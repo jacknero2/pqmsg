@@ -482,6 +482,30 @@ app.post(
   })
 );
 
+// read receipt — same shape as /delivered, distinct signal. A client only
+// sends this when its user has read receipts enabled and is actually
+// looking at the conversation.
+app.post(
+  '/api/conv/:convId/messages/:msgId/seen',
+  authActor,
+  participantGuard,
+  wrap(async (req, res) => {
+    const deviceId = String(req.body.deviceId || '');
+    if (!req.actor.deviceId || req.actor.deviceId !== deviceId) {
+      throw Object.assign(new Error('ack must be signed by the acking device'), { status: 403 });
+    }
+    const msg = await store.getMessage(req.params.convId, req.params.msgId);
+    if (!msg) throw Object.assign(new Error('no such message'), { status: 404 });
+    if (!msg.recipients.some((r) => r.deviceId === deviceId)) {
+      throw Object.assign(new Error('not a recipient device'), { status: 400 });
+    }
+    const updated = await store.markSeen(req.params.convId, req.params.msgId, deviceId, Date.now());
+    presence.log('seen', { convId: req.params.convId, msgId: req.params.msgId, deviceId });
+    wakeLocal([msg.sender], req.params.convId, updated.serverSeq);
+    res.json({ ok: true, seenBy: updated.seenBy });
+  })
+);
+
 app.get(
   '/api/inbox',
   authActor,
@@ -564,6 +588,8 @@ app.get('/api/admin/conv/:convId', admin, wrap(async (req, res) => {
       kemCtBytes: Buffer.from(r.kemCt, 'base64').length,
       delivered: !!(m.deliveries && m.deliveries[r.deviceId]),
       deliveredAt: m.deliveries ? m.deliveries[r.deviceId] : undefined,
+      seen: !!(m.seenBy && m.seenBy[r.deviceId]),
+      seenAt: m.seenBy ? m.seenBy[r.deviceId] : undefined,
     })),
   }));
   res.json({ meta, order, messages: view });

@@ -55,6 +55,9 @@ class Engine extends EventEmitter {
     // brand-new account) and clobber needsLogin back to false, which looks
     // like the UI randomly bouncing between the login screen and the app.
     this._resumeGen = 0;
+    // which conversation the renderer is showing, and whether the window is
+    // focused — drives read receipts and whether a new message notifies.
+    this._activeView = { convId: null, focused: true };
     // version gate
     this.updateGate = null; // { required, current, downloadUrl, source } -> hard block
     this.updateInfo = null; // { latest, downloadUrl }                   -> soft banner
@@ -124,6 +127,7 @@ class Engine extends EventEmitter {
   }
 
   snapshot() {
+    const conversations = this.listConversationsView();
     return {
       profile: this.store.profile,
       dir: this.store.dir,
@@ -139,12 +143,94 @@ class Engine extends EventEmitter {
       syncIntervalMs: this.syncIntervalMs,
       lastSyncAt: this.lastSyncAt,
       lastSyncError: this.lastSyncError,
-      conversations: this.listConversationsView(),
+      conversations,
+      unreadTotal: conversations.reduce((n, c) => n + (c.unread || 0), 0),
+      readReceipts: this.readReceipts,
       log: this.log.slice(-60),
       appVersion: this.appVersion,
       updateGate: this.updateGate,
       updateInfo: this.updateInfo,
     };
+  }
+
+  // -- read state + read receipts ---------------------------------------
+  get readReceipts() {
+    const v = this.identity ? this.store.loadAppConfig().readReceipts : undefined;
+    return v === undefined ? true : !!v; // default on
+  }
+  setReadReceipts(on) {
+    this.store.saveAppConfig({ readReceipts: !!on });
+    this.emit('update');
+    return { readReceipts: !!on };
+  }
+
+  /** Renderer tells us which conversation is on screen + whether the window is focused. */
+  setActiveView({ convId, focused }) {
+    this._activeView = { convId: convId || null, focused: focused !== false };
+    if (this._activeView.convId && this._activeView.focused) {
+      this.markConversationRead(this._activeView.convId).catch(() => {});
+    }
+    this.emit('update');
+  }
+
+  _unreadFor(conv) {
+    if (!conv || (conv.status || 'active') !== 'active') return 0;
+    const watermark = conv.lastReadSeq || 0;
+    let n = 0;
+    for (const m of Object.values(conv.messages || {})) {
+      if (m.direction === 'in' && !m.locked && !m.system && m.serverSeq != null && m.serverSeq > watermark) n++;
+    }
+    return n;
+  }
+
+  /**
+   * Mark everything in a conversation up to now as read: advance the local
+   * read watermark (clears its unread badge) and, if this account sends read
+   * receipts, queue a "seen" ack for each inbound message so the sender
+   * learns it was actually read (not just delivered).
+   */
+  async markConversationRead(convId) {
+    const conv = this.store.loadConversation(convId);
+    if (!conv) return;
+    const before = conv.lastReadSeq || 0;
+    conv.lastReadSeq = Math.max(before, conv.cursorSeq || 0);
+    if (this.readReceipts) {
+      for (const m of Object.values(conv.messages)) {
+        if (m.direction === 'in' && !m.locked && !m.system && m.serverSeq != null && !m.seenAcked) {
+          m.needSeen = true;
+        }
+      }
+    }
+    this.store.saveConversation(conv);
+    this.emit('update');
+    await this._flushSeen(conv.convId);
+  }
+
+  /** Fire off any pending "seen" acks for a conversation (retries next sync on failure). */
+  async _flushSeen(convId) {
+    if (!this.api || !this.identity) return;
+    const conv = this.store.loadConversation(convId);
+    if (!conv || !conv.homeServer) return;
+    let changed = false;
+    for (const m of Object.values(conv.messages)) {
+      if (!m.needSeen || m.seenAcked) continue;
+      try {
+        await this._fed('POST', conv.homeServer, `/api/conv/${convId}/messages/${m.msgId}/seen`, {
+          body: { deviceId: this.identity.deviceId },
+          auth: true,
+          convId,
+        });
+        m.seenAcked = true;
+        delete m.needSeen;
+        changed = true;
+      } catch {
+        /* keep needSeen, retry next cycle */
+      }
+    }
+    if (changed) {
+      this.store.saveConversation(conv);
+      this.emit('update');
+    }
   }
 
   /** Recompute the update gate from the global floor + this server's serverinfo. */
@@ -469,6 +555,7 @@ class Engine extends EventEmitter {
   async startConversation(input) {
     const other = this._asHandle(input);
     if (this.isMe(other)) throw new Error('cannot message yourself');
+    const otherUser = pqc.parseHandle(other).username;
     // one DM per person: if we already have this thread (even if it is a
     // pending request), just hand back its id instead of anything new.
     const convId = pqc.dmConvId(this.myHandle, other);
@@ -478,11 +565,26 @@ class Engine extends EventEmitter {
       return convId;
     }
     const ids = await this.refreshContact(other, true);
-    if (!ids.devices.length) throw new Error(`${other} has no enrolled devices yet`);
+    if (!ids.devices.length) throw new Error(`@${otherUser} has no enrolled devices yet`);
     const parts = [this.myHandle, other];
     const home = pqc.homeServer(parts);
-    this.store.ensureConversation(convId, parts, 'dm', home, null, 'active');
-    this.event('conversation-open', { handle: other, convId, home, devices: ids.devices.length, safetyNumber: ids.safetyNumber });
+    if (already && already.status === 'deleted') {
+      // re-opening a chat the user deleted: fresh, active slate — but the
+      // pre-deletion messages they cleared stay hidden.
+      const hide = already.deletedThroughSeq || already.hideThroughSeq || 0;
+      already.status = 'active';
+      already.hideThroughSeq = hide;
+      already.cursorSeq = hide;
+      already.lastReadSeq = hide;
+      already.messages = {};
+      already.controlMsgs = {};
+      already.order = [];
+      delete already.deletedAt;
+      this.store.saveConversation(already);
+    } else {
+      this.store.ensureConversation(convId, parts, 'dm', home, null, 'active');
+    }
+    this.event('conversation-open', { handle: other, username: otherUser, convId, home, devices: ids.devices.length, safetyNumber: ids.safetyNumber });
     this.emit('update');
     return convId;
   }
@@ -1053,6 +1155,9 @@ class Engine extends EventEmitter {
   }
 
   async pullConversation(conv) {
+    // first sync after this feature landed: treat all existing history as
+    // already read, so only genuinely new messages count as unread.
+    if (conv.lastReadSeq === undefined) conv.lastReadSeq = conv.cursorSeq || 0;
     const from = Math.max(0, conv.cursorSeq - TRAILING_WINDOW);
     const { messages, order } = await this._fedConvGet(conv, `/api/conv/${conv.convId}/messages`, { sinceSeq: from });
     let maxSeq = conv.cursorSeq;
@@ -1096,6 +1201,9 @@ class Engine extends EventEmitter {
         existing.serverSeq = env.serverSeq;
         if (fromMyDevice) {
           existing.deliveries = env.deliveries || {};
+          const wasSeen = existing.seenBy && Object.keys(existing.seenBy).length;
+          existing.seenBy = env.seenBy || existing.seenBy || {};
+          if (!wasSeen && Object.keys(existing.seenBy).length) changed = true;
           if (!existing.editPending && existing.state !== 'failed') {
             const ns = this._deliveredEnough(existing) ? 'delivered' : 'sent';
             if (ns !== existing.state) { existing.state = ns; changed = true; }
@@ -1195,11 +1303,28 @@ class Engine extends EventEmitter {
         if (!fromMyDevice) rec.acked = false;
         if (fromMyDevice) {
           rec.deliveries = env.deliveries || {};
+          rec.seenBy = env.seenBy || {};
           rec.state = this._deliveredEnough(rec) ? 'delivered' : 'sent';
         }
         conv.messages[env.msgId] = rec;
         changed = true;
-        if (!fromMyDevice) this.event('decrypted', { convId: conv.convId, msgId: env.msgId, from: env.sender, verified });
+        if (!fromMyDevice) {
+          this.event('decrypted', { convId: conv.convId, msgId: env.msgId, from: env.sender, verified });
+          if (!decErr) {
+            const preview =
+              rec.attachment
+                ? (rec.attachment.isImage ? 'Photo' : (rec.text || rec.attachment.name))
+                : rec.text;
+            this.event('inbound-message', {
+              convId: conv.convId,
+              msgId: env.msgId,
+              from: this.prettyHandle(env.sender),
+              preview: String(preview || '').slice(0, 140),
+              isGroup: conv.kind === 'group',
+              groupName: conv.name || null,
+            });
+          }
+        }
         continue;
       }
 
@@ -1252,6 +1377,15 @@ class Engine extends EventEmitter {
     conv.lastReconciledAt = Date.now();
     this.store.saveConversation(conv);
     if (changed) this.emit('update');
+
+    // if the user is looking at this conversation right now, keep it marked
+    // read (advances the unread watermark and sends read receipts for
+    // whatever just arrived); otherwise still retry any pending seen acks.
+    if (this._activeView.focused && this._activeView.convId === conv.convId) {
+      await this.markConversationRead(conv.convId);
+    } else {
+      await this._flushSeen(conv.convId);
+    }
   }
 
   // -- views for the renderer --------------------------------------
@@ -1334,6 +1468,8 @@ class Engine extends EventEmitter {
               dataUrl: m.attachment.isImage && m.attachment.dataB64 ? `data:${m.attachment.mime};base64,${m.attachment.dataB64}` : null }
           : null,
         canEdit: m.direction === 'out' && !m.locked && !m.system && !m.attachment && m.text != null,
+        // "seen" is only surfaced if THIS account sends read receipts too
+        seen: m.direction === 'out' && this.readReceipts && !!(m.seenBy && Object.keys(m.seenBy).length),
       }));
     return {
       convId,
@@ -1349,6 +1485,7 @@ class Engine extends EventEmitter {
       homeIsMine: conv.homeServer ? pqc.normServer(conv.homeServer) === pqc.parseHandle(this.myHandle).server : true,
       lastReconciledAt: conv.lastReconciledAt,
       cursorSeq: conv.cursorSeq,
+      unread: this._unreadFor(conv),
       messages,
     };
   }
@@ -1373,6 +1510,7 @@ class Engine extends EventEmitter {
           participants: v.participants,
           homeServer: conv.homeServer || null,
           messageCount: v.messages.length,
+          unread: v.unread || 0,
           lastText: last ? last.text : '',
           lastAt: last ? last.sentAt : conv.lastReconciledAt || conv.createdAt,
           lastMine: last ? last.mine : false,

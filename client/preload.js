@@ -32,8 +32,13 @@ contextBridge.exposeInMainWorld('pqmsg', {
   getConversation: (convId) => call('pqmsg:getConversation', { convId }),
   syncNow: () => call('pqmsg:syncNow'),
   setSyncInterval: (ms) => call('pqmsg:setSyncInterval', { ms }),
+  setActiveView: (convId, focused) => call('pqmsg:setActiveView', { convId, focused }),
+  markRead: (convId) => call('pqmsg:markRead', { convId }),
+  setReadReceipts: (on) => call('pqmsg:setReadReceipts', { on }),
   contact: (username) => call('pqmsg:contact', { username }),
   openExternal: (url) => call('pqmsg:openExternal', { url }),
   onUpdate: (fn) => ipcRenderer.on('pqmsg:update', (_e, s) => fn(s)),
   onEvent: (fn) => ipcRenderer.on('pqmsg:event', (_e, ev) => fn(ev)),
+  onToast: (fn) => ipcRenderer.on('pqmsg:toast', (_e, t) => fn(t)),
+  onOpenConversation: (fn) => ipcRenderer.on('pqmsg:open-conversation', (_e, id) => fn(id)),
 });

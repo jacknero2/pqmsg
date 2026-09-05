@@ -280,6 +280,12 @@ class LocalStore {
     return o.order;
   }
   async markDelivered(convId, msgId, deviceId, ts) {
+    return this._markReceipt(convId, msgId, deviceId, ts, 'deliveries');
+  }
+  async markSeen(convId, msgId, deviceId, ts) {
+    return this._markReceipt(convId, msgId, deviceId, ts, 'seenBy');
+  }
+  async _markReceipt(convId, msgId, deviceId, ts, field) {
     return this.mutex.run(convId, async () => {
       const files = await this._messageFiles(convId);
       const f = files.find((x) => x.includes(msgId));
@@ -287,9 +293,9 @@ class LocalStore {
       const p = path.join(this._cdir(convId), 'messages', f);
       const m = await this._readJson(p, null);
       if (!m) return null;
-      m.deliveries = m.deliveries || {};
-      if (!m.deliveries[deviceId]) {
-        m.deliveries[deviceId] = ts || Date.now();
+      m[field] = m[field] || {};
+      if (!m[field][deviceId]) {
+        m[field][deviceId] = ts || Date.now();
         await this._writeJson(p, m);
       }
       return m;

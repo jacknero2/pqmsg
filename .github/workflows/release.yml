@@ -31,6 +31,7 @@ jobs:
       - run: npm run e2e:admin
       - run: npm run e2e:messaging
       - run: npm run e2e:lifecycle
+      - run: npm run e2e:receipts
       - run: npm run e2e:stress
 
       # no GH_TOKEN here on purpose — electron-builder must NOT auto-publish;

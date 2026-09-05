@@ -70,10 +70,9 @@
         <span class="prompt">to:</span>
         <div id="recip-box">
           <span id="recip-chips"></span>
-          <input id="in-to" placeholder="username — space or enter to add, add more for a group" autocomplete="off" />
+          <input id="in-to" placeholder="username — enter to start, add more for a group" autocomplete="off" />
           <div id="ac-drop" hidden></div>
         </div>
-        <button id="btn-open" class="primary sm">start</button>
         <span id="newconv-msg" class="msg"></span>
       </div>
 
@@ -104,6 +103,9 @@
         <label>sync interval: <b id="si-val"></b> ms
           <input id="si" type="range" min="1000" max="15000" step="500" />
         </label>
+        <label class="chk"><input id="set-receipts" type="checkbox" /> send read receipts
+          <span class="chk-hint">others see when you've read their messages; you see the same back</span>
+        </label>
         <div class="kv"><span>server</span><code id="set-server"></code></div>
         <div class="kv"><span>account</span><code id="set-user"></code></div>
         <div class="kv"><span>device id</span><code id="set-device"></code></div>
@@ -125,6 +127,9 @@
         </div>
       </div>
     </section>
+
+    <!-- in-app notification toasts -->
+    <div id="toasts"></div>
 
     <script src="app.js"></script>
   </body>

@@ -70,6 +70,9 @@ class Api {
   ackDelivered(convId, msgId, deviceId) {
     return this.post(`/api/conv/${convId}/messages/${msgId}/delivered`, { deviceId });
   }
+  ackSeen(convId, msgId, deviceId) {
+    return this.post(`/api/conv/${convId}/messages/${msgId}/seen`, { deviceId });
+  }
   listBlocks() {
     return this.get('/api/blocks');
   }

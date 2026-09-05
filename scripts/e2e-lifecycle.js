@@ -94,6 +94,24 @@ const S = () => `http://127.0.0.1:${PORT}`;
     ok('a new message from the peer re-prompts the deleter with a clean slate');
   });
 
+  await section('deleting a chat then re-starting it yourself gives a working, empty thread', async () => {
+    await alice.sendMessage(cid, 'a couple more');
+    await sync([alice, bob], 8);
+    alice.deleteConversation(cid);
+    assert.strictEqual(alice.getConversationView(cid), null, 'gone after delete');
+    // user types the name again and hits enter -> startConversation
+    const again = await alice.startConversation('bob');
+    assert.strictEqual(again, cid, 'same deterministic DM id');
+    const v = alice.getConversationView(cid);
+    assert.ok(v, 're-started chat opens (not stuck as "deleted")');
+    assert.strictEqual(v.status, 'active', 'it is active and usable');
+    assert.strictEqual(v.messages.length, 0, 'fresh slate — no pre-deletion history');
+    await alice.sendMessage(cid, 'starting over');
+    await sync([alice, bob], 10);
+    assert.ok(bob.getConversationView(cid).messages.some((m) => m.text === 'starting over'), 'messages flow in the re-started chat');
+    ok('delete then re-start the same chat yourself -> a clean, working thread');
+  });
+
   // ---------------------------------------------------------------------
   await section('block: blocked -> blocker send is refused; blocker -> blocked still works', async () => {
     await alice.blockPeer(cid);

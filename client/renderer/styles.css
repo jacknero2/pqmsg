@@ -88,8 +88,9 @@ code { color: var(--cyan); word-break: break-all; font-size: 11px; }
 #twofa { margin-top: 8px; padding-top: 12px; border-top: 1px solid var(--line); }
 #twofa[hidden] { display: none; }
 #twofa #in-code { letter-spacing: 4px; font-size: 16px; text-align: center; }
-.panel label.chk { display: flex; align-items: center; gap: 8px; font-size: 11px; color: var(--ink); text-transform: none; cursor: pointer; }
+.panel label.chk { display: flex; align-items: center; gap: 8px; font-size: 11px; color: var(--ink); text-transform: none; cursor: pointer; flex-wrap: wrap; }
 .panel label.chk input { width: auto; margin: 0; }
+.panel label.chk .chk-hint { flex-basis: 100%; color: var(--dim); font-size: 10px; margin: 2px 0 0 24px; }
 .cursor { animation: blink 1s steps(1) infinite; color: var(--cyan); }
 @keyframes blink { 50% { opacity: 0; } }
 .kv { display: flex; gap: 10px; font-size: 11px; margin: 8px 0; }
@@ -170,6 +171,14 @@ main { flex: 1; display: flex; min-height: 0; }
 .conv .prev .tag { color: var(--gold); }
 .conv .prev .tag.red { color: var(--lred); }
 .conv .prev .tag.grey { color: var(--dim); }
+.conv.unread .name { color: #fff; font-weight: 600; }
+.conv .name { display: flex; align-items: center; gap: 6px; }
+.unread-badge {
+  margin-left: auto; flex: 0 0 auto;
+  min-width: 17px; height: 17px; padding: 0 5px; border-radius: 9px;
+  background: var(--lred); color: #2a0d0d; font-size: 10px; font-weight: 700;
+  display: inline-flex; align-items: center; justify-content: center; line-height: 1;
+}
 
 #thread { flex: 1; display: flex; flex-direction: column; min-width: 0; }
 #thread-head {
@@ -315,6 +324,24 @@ main { flex: 1; display: flex; min-height: 0; }
 #update-banner .mini { background: #10343a; border: 1px solid #1f6f6a; color: var(--cyan); padding: 2px 9px; font-size: 10px; }
 #update-banner #ub-x { background: transparent; border-color: var(--line); color: var(--dim); }
 #update-banner[hidden] { display: none; }
+
+/* in-app notification toasts — slide in from the right, app-styled */
+#toasts {
+  position: fixed; top: 14px; right: 14px; z-index: 80;
+  display: flex; flex-direction: column; gap: 8px; pointer-events: none;
+}
+.toast {
+  pointer-events: auto; cursor: pointer;
+  width: 300px; max-width: 70vw;
+  background: var(--panel); border: 1px solid var(--line); border-left: 3px solid var(--cyan);
+  border-radius: 8px; padding: 9px 12px;
+  box-shadow: 0 12px 40px rgba(0, 0, 0, 0.55);
+  transform: translateX(120%); opacity: 0;
+  transition: transform .24s cubic-bezier(.2,.8,.2,1), opacity .24s;
+}
+.toast.in { transform: translateX(0); opacity: 1; }
+.toast .t-title { color: var(--cyan); font-size: 12px; font-weight: 600; margin-bottom: 2px; }
+.toast .t-body { color: var(--ink); font-size: 11px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 
 #console {
   height: 92px; overflow-y: auto; border-top: 1px solid var(--line);

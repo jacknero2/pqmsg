@@ -115,7 +115,12 @@ function renderChips() {
     })
     .join('');
   for (const b of box.querySelectorAll('.rx')) b.onclick = () => { recips.splice(+b.dataset.i, 1); renderChips(); $('in-to').focus(); };
-  $('btn-open').textContent = recips.length >= 2 ? 'start group' : 'start';
+  $('in-to').placeholder =
+    recips.length === 0
+      ? 'username — enter to start, add more for a group'
+      : recips.length === 1
+      ? 'enter to start · or type another name for a group'
+      : 'enter to start the group · or add more';
 }
 
 async function commitToken(raw) {
@@ -139,7 +144,7 @@ function flashMsg(t, ok) {
   m.textContent = t;
 }
 
-$('in-to').addEventListener('keydown', (e) => {
+$('in-to').addEventListener('keydown', async (e) => {
   const drop = $('ac-drop');
   if (!drop.hidden && (e.key === 'ArrowDown' || e.key === 'ArrowUp')) {
     e.preventDefault();
@@ -150,9 +155,12 @@ $('in-to').addEventListener('keydown', (e) => {
   }
   if (e.key === 'Enter') {
     e.preventDefault();
-    if (!drop.hidden && acIndex >= 0) return commitToken(drop.children[acIndex].dataset.u);
-    if ($('in-to').value.trim()) return commitToken($('in-to').value);
-    return startFromRecips();
+    // first enter finishes the name (turns it into a chip); a second enter,
+    // with the field empty, starts the conversation / group.
+    if (!drop.hidden && acIndex >= 0) { commitToken(drop.children[acIndex].dataset.u); return; }
+    if ($('in-to').value.trim()) { commitToken($('in-to').value); return; }
+    if (recips.length) startFromRecips();
+    return;
   }
   if ((e.key === ' ' || e.key === ',') && $('in-to').value.trim()) {
     e.preventDefault();
@@ -166,10 +174,6 @@ $('in-to').addEventListener('keydown', (e) => {
 });
 $('in-to').addEventListener('input', () => showAC($('in-to').value));
 $('in-to').addEventListener('blur', () => setTimeout(hideAC, 120));
-$('btn-open').onclick = () => {
-  if ($('in-to').value.trim()) return commitToken($('in-to').value).then(startFromRecips);
-  startFromRecips();
-};
 
 function showAC(q) {
   const query = norm(q);
@@ -263,11 +267,13 @@ $('si').addEventListener('input', (e) => {
   $('si-val').textContent = e.target.value;
 });
 $('si').addEventListener('change', (e) => window.pqmsg.setSyncInterval(parseInt(e.target.value, 10)));
+$('set-receipts').addEventListener('change', (e) => window.pqmsg.setReadReceipts(e.target.checked));
 
 function fillSettings() {
   if (!state) return;
   $('si').value = state.syncIntervalMs;
   $('si-val').textContent = state.syncIntervalMs;
+  $('set-receipts').checked = state.readReceipts !== false;
   $('set-server').textContent = state.serverUrl;
   $('set-user').textContent = state.username || '—';
   $('set-device').textContent = state.deviceId || '—';
@@ -491,6 +497,26 @@ window.pqmsg.onUpdate((s) => {
 });
 window.pqmsg.onEvent((ev) => logLine(fmtEvent(ev)));
 
+// ---------- notifications ----------
+window.pqmsg.onOpenConversation((id) => { if (id) selectConv(id); });
+window.pqmsg.onToast((t) => showToast(t));
+window.addEventListener('focus', () => window.pqmsg.setActiveView(activeConv, true));
+window.addEventListener('blur', () => window.pqmsg.setActiveView(activeConv, false));
+
+function showToast({ convId, title, body }) {
+  const wrap = $('toasts');
+  const el = document.createElement('div');
+  el.className = 'toast';
+  el.innerHTML = `<div class="t-title">${esc(title || 'New message')}</div><div class="t-body">${esc((body || '').slice(0, 120))}</div>`;
+  el.onclick = () => { if (convId) selectConv(convId); el.remove(); };
+  wrap.appendChild(el);
+  requestAnimationFrame(() => el.classList.add('in'));
+  const kill = () => { el.classList.remove('in'); setTimeout(() => el.remove(), 260); };
+  setTimeout(kill, 5000);
+  // cap the stack
+  while (wrap.children.length > 4) wrap.firstChild.remove();
+}
+
 function render() {
   if (!state) return;
   renderUpdate(state);
@@ -538,7 +564,7 @@ function render() {
   sb.innerHTML = '';
   for (const c of state.conversations.filter((x) => x.status === 'active')) {
     const div = document.createElement('div');
-    div.className = 'conv' + (c.convId === activeConv ? ' active' : '');
+    div.className = 'conv' + (c.convId === activeConv ? ' active' : '') + (c.unread ? ' unread' : '');
     let tag = '';
     if (c.lastMine) {
       if (c.lastDisplay === 'delivered') tag = '<span class="tag">✓ delivered</span> ';
@@ -546,7 +572,8 @@ function render() {
       else tag = '<span class="tag grey">· sending…</span> ';
     }
     const icon = c.kind === 'group' ? '👥 ' : '';
-    div.innerHTML = `<div class="name">${icon}${esc(c.title)}</div><div class="prev">${tag}${esc(c.lastText || '…')}</div>`;
+    const badge = c.unread ? `<span class="unread-badge">${c.unread > 99 ? '99+' : c.unread}</span>` : '';
+    div.innerHTML = `<div class="name">${icon}${esc(c.title)}${badge}</div><div class="prev">${tag}${esc(c.lastText || '…')}</div>`;
     div.onclick = () => selectConv(c.convId);
     sb.appendChild(div);
   }
@@ -610,14 +637,15 @@ async function renderThread() {
     let status = '';
     const failed = m.mine && m.display === 'failed';
     if (m.mine) {
-      status =
-        m.display === 'delivered'
-          ? ' · delivered ✓'
-          : failed
-          ? ' · not sent ✗ ' + esc(m.error || '')
-          : m.state === 'pending'
-          ? ' · sending…'
-          : ' · sent (awaiting delivery)';
+      status = m.seen
+        ? ' · seen'
+        : m.display === 'delivered'
+        ? ' · delivered ✓'
+        : failed
+        ? ' · not sent ✗ ' + esc(m.error || '')
+        : m.state === 'pending'
+        ? ' · sending…'
+        : ' · sent (awaiting delivery)';
     } else if (m.display === 'suspect') {
       status = ' · ⚠ unverified signature';
     } else if (m.display === 'received') {
@@ -766,6 +794,7 @@ async function retrySend(msgId) {
 function selectConv(id) {
   activeConv = id;
   lastRenderKey = '';
+  window.pqmsg.setActiveView(id, document.hasFocus());
   render();
 }
 

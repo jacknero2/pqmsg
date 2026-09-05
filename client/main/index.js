@@ -1,8 +1,36 @@
 'use strict';
 const path = require('path');
 const fs = require('fs');
-const { app, BrowserWindow, ipcMain, shell, dialog, nativeImage } = require('electron');
+const { app, BrowserWindow, ipcMain, shell, dialog, nativeImage, Notification } = require('electron');
 const { Engine } = require('./engine');
+
+// which conversation the renderer is showing + whether our window is focused
+let activeView = { convId: null, focused: true };
+
+/** A fresh inbound message — notify unless the user is already looking at it. */
+function onInboundMessage(e) {
+  const focused = win && !win.isDestroyed() && win.isFocused();
+  const viewing = focused && activeView.convId === e.convId;
+  if (viewing) return;
+  const title = e.isGroup ? `${e.groupName || 'group'} · ${e.from}` : e.from;
+  const body = e.preview || 'New message';
+  if (focused) {
+    // window is up but on another conversation — in-app toast, app-styled
+    win.webContents.send('pqmsg:toast', { convId: e.convId, title, body });
+    return;
+  }
+  if (!Notification.isSupported()) return;
+  const n = new Notification({ title, body });
+  n.on('click', () => {
+    if (win && !win.isDestroyed()) {
+      if (win.isMinimized()) win.restore();
+      win.show();
+      win.focus();
+      win.webContents.send('pqmsg:open-conversation', e.convId);
+    }
+  });
+  n.show();
+}
 
 // Photos straight off a phone are multi-MB and there is no reason to send a
 // chat attachment at full sensor resolution. Anything bigger than this, or
@@ -41,9 +69,15 @@ function shrinkImage(buf, ext) {
 
 /** Pick a file, read it, hand the renderer a base64 blob for encryption. */
 async function pickFileForSend() {
-  const r = await dialog.showOpenDialog(win, { properties: ['openFile'], title: 'attach a file' });
+  const r = await dialog.showOpenDialog(win, {
+    properties: ['openFile', 'treatPackageAsDirectory'],
+    title: 'attach a file',
+  });
   if (r.canceled || !r.filePaths[0]) return null;
   const p = r.filePaths[0];
+  let st;
+  try { st = fs.statSync(p); } catch { throw new Error('could not read that file'); }
+  if (st.isDirectory()) throw new Error('pick a file, not a folder');
   let ext = path.extname(p).toLowerCase();
   let buf = fs.readFileSync(p);
   let name = path.basename(p);
@@ -131,13 +165,22 @@ function createWindow() {
     if (pending) return;
     pending = setTimeout(() => {
       pending = null;
-      if (win && !win.isDestroyed()) win.webContents.send('pqmsg:update', engine.snapshot());
+      if (win && !win.isDestroyed()) {
+        const snap = engine.snapshot();
+        win.webContents.send('pqmsg:update', snap);
+        // dock / taskbar badge — red pill with the unread count (macOS/Linux)
+        if (typeof app.setBadgeCount === 'function') app.setBadgeCount(snap.unreadTotal || 0);
+      }
     }, 120);
   };
   engine.on('update', push);
   engine.on('engine-event', (e) => {
     if (win && !win.isDestroyed()) win.webContents.send('pqmsg:event', e);
+    if (e.kind === 'inbound-message') onInboundMessage(e);
   });
+
+  win.on('focus', () => { activeView.focused = true; engine.setActiveView(activeView); });
+  win.on('blur', () => { activeView.focused = false; engine.setActiveView(activeView); });
 }
 
 app.whenReady().then(async () => {
@@ -182,6 +225,12 @@ app.whenReady().then(async () => {
   H('pqmsg:getConversation', (a) => engine.getConversationView(a.convId));
   H('pqmsg:syncNow', () => engine.syncOnce('manual'));
   H('pqmsg:setSyncInterval', (a) => engine.setSyncInterval(a.ms));
+  H('pqmsg:setActiveView', (a) => {
+    activeView = { convId: a.convId || null, focused: a.focused !== false };
+    engine.setActiveView(activeView);
+  });
+  H('pqmsg:markRead', (a) => engine.markConversationRead(a.convId));
+  H('pqmsg:setReadReceipts', (a) => engine.setReadReceipts(a.on));
   H('pqmsg:contact', (a) => engine.refreshContact(a.username, true));
   H('pqmsg:openExternal', (a) => {
     if (/^https?:\/\//.test(a.url || '')) shell.openExternal(a.url);

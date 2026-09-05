@@ -302,16 +302,22 @@ class GitHubStore {
     return o.order;
   }
   async markDelivered(convId, msgId, deviceId, ts) {
+    return this._markReceipt(convId, msgId, deviceId, ts, 'deliveries');
+  }
+  async markSeen(convId, msgId, deviceId, ts) {
+    return this._markReceipt(convId, msgId, deviceId, ts, 'seenBy');
+  }
+  async _markReceipt(convId, msgId, deviceId, ts, field) {
     return this.mutex.run(convId, async () => {
       const f = (await this._messageFiles(convId)).find((x) => x.includes(msgId));
       if (!f) return null;
       const p = `${this._cdir(convId)}/messages/${f}`;
       const m = await this._getJson(p);
       if (!m) return null;
-      m.deliveries = m.deliveries || {};
-      if (!m.deliveries[deviceId]) {
-        m.deliveries[deviceId] = ts || Date.now();
-        await this._putJson(p, m, `pqmsg: delivered ${msgId} -> ${deviceId}`);
+      m[field] = m[field] || {};
+      if (!m[field][deviceId]) {
+        m[field][deviceId] = ts || Date.now();
+        await this._putJson(p, m, `pqmsg: ${field} ${msgId} -> ${deviceId}`);
       }
       return m;
     });

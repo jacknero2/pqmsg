@@ -20,6 +20,7 @@
     "e2e:admin": "node scripts/e2e-admin.js",
     "e2e:messaging": "node scripts/e2e-messaging.js",
     "e2e:lifecycle": "node scripts/e2e-lifecycle.js",
+    "e2e:receipts": "node scripts/e2e-receipts.js",
     "e2e:stress": "node scripts/e2e-stress.js",
     "cleanup-users": "node scripts/cleanup-test-users.js",
     "icon": "node scripts/make-icon.js",
