@@ -108,12 +108,38 @@ backoff and keeps you signed in.
 
 ### Conversations
 
-- **Direct messages** — type a username, no `@server` needed.
+- **Direct messages & groups from one field** — type a name in "to:", press
+  space/enter to turn it into a chip (blue while it resolves, gold when it
+  matches a real account, red if not); one chip is a DM, two or more is a
+  group. Autocomplete ranks people alphabetically, then by how recently you
+  last talked. One DM per person — a repeat just opens the existing thread.
 - **Group chats** — add/remove members at any time (only current members can
   change membership; new members see only post-join messages).
 - **Conversation requests** — an incoming conversation shows "accept
   conversation from *name*?" with yes/no; nothing is pulled or acked until
   accepted, and decline stops it permanently.
+- **Delete a chat** (your side only) — the peer keeps their copy; if they
+  message you again it comes back as a fresh request with no old history.
+
+### Messages
+
+- **Edit** your own sent messages in place — no "edited" marker on either
+  side; the bubble just goes red again until the edit is delivered.
+- **React** with any emoji (quick picks + a free field); toggles, mirrored
+  to everyone, never its own bubble.
+- **Reply** — right-click a message or swipe it toward the centre with two
+  fingers; the reply carries a "You said" / "@user said" quote.
+- **Attachments** — send any file; images preview inline, everything else is
+  a chip that saves to Downloads on click. All bytes ride inside the same
+  encrypted envelope; the server only ever sees ciphertext.
+- **Block / unblock** from the conversation's ⋯ menu — the blocked person is
+  told in-chat and can read but not reply until unblocked.
+
+### Account
+
+Delete your account from Settings (typed confirmation) — removes it and its
+data from the server and wipes it from this device. Operators can remove
+accounts from the dashboard or with `npm run cleanup-users`.
 
 ### Version gates
 

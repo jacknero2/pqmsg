@@ -1,6 +1,6 @@
 {
   "_comment": "Global client-version gate, checked by every client on startup and every 6h. 'latest' = newest release (clients below it get a dismissible 'update available' banner). 'minSupported' = clients below it are HARD-BLOCKED with an unskippable 'update required' screen. Raise 'minSupported' to force everyone to update. Individual servers can also set their own floor via PQMSG_MIN_CLIENT.",
-  "latest": "0.7.1",
+  "latest": "0.8.0",
   "minSupported": "0.0.0",
   "url": "https://jacknero2.github.io/pqmsg/"
 }
