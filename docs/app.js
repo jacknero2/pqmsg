@@ -63,6 +63,7 @@ function renderGroup(el, assets, myOS) {
   try {
     const r = await fetch(`https://api.github.com/repos/${REPO}/releases/latest`, {
       headers: { Accept: 'application/vnd.github+json' },
+      cache: 'no-store', // always the live release — never a stale cached asset list/size
     });
     if (!r.ok) throw new Error(String(r.status));
     const rel = await r.json();
