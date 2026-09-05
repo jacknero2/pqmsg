@@ -1041,6 +1041,21 @@ class Engine extends EventEmitter {
         continue;
       }
 
+      // ---- a normal bubble we already have decrypted: fast path, no
+      //      re-verify / re-decrypt every sync (this is the hot path for a
+      //      long conversation's trailing window) ----
+      if (existing && existing.text != null && !existing.locked) {
+        existing.serverSeq = env.serverSeq;
+        if (fromMyDevice) {
+          existing.deliveries = env.deliveries || {};
+          if (!existing.editPending && existing.state !== 'failed') {
+            const ns = this._deliveredEnough(existing) ? 'delivered' : 'sent';
+            if (ns !== existing.state) { existing.state = ns; changed = true; }
+          }
+        }
+        continue;
+      }
+
       // ---- a message we can open (ours, or addressed to us) --------------
       if (forMe) {
         // signature check against the sender device's registered key
@@ -1052,7 +1067,7 @@ class Engine extends EventEmitter {
         } catch {}
 
         let body = null, decErr = null;
-        // don't re-decrypt something already fully materialised
+        // anything not caught by the fast paths above still needs opening
         const alreadyDone = existing && ((existing.text != null && !existing.locked) || existing.system);
         if (!alreadyDone) {
           try {
@@ -1104,19 +1119,6 @@ class Engine extends EventEmitter {
               deliveries: env.deliveries || {}, acked: fromMyDevice ? undefined : false,
             };
             changed = true;
-          }
-          continue;
-        }
-
-        if (existing && existing.text != null && !existing.locked) {
-          // already have it — just refresh server-assigned + delivery fields
-          existing.serverSeq = env.serverSeq;
-          if (fromMyDevice) {
-            existing.deliveries = env.deliveries || {};
-            if (!existing.editPending && existing.state !== 'failed') {
-              const ns = this._deliveredEnough(existing) ? 'delivered' : 'sent';
-              if (ns !== existing.state) { existing.state = ns; changed = true; }
-            }
           }
           continue;
         }
