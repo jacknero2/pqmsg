@@ -194,18 +194,136 @@ function fillSettings() {
 }
 
 // ---------- composer ----------
+let replyTarget = null; // { msgId, who, textPreview } — set by reply gesture / menu
+let editTarget = null; // { msgId } — set by the edit menu item
+
+function setReplyTarget(t) {
+  replyTarget = t;
+  editTarget = null;
+  paintComposerChrome();
+  $('in-msg').focus();
+}
+function setEditTarget(m) {
+  editTarget = { msgId: m.msgId };
+  replyTarget = null;
+  $('in-msg').value = m.text || '';
+  paintComposerChrome();
+  $('in-msg').focus();
+  $('in-msg').select();
+}
+function clearComposerTargets() {
+  replyTarget = null;
+  editTarget = null;
+  paintComposerChrome();
+}
+function paintComposerChrome() {
+  const strip = $('composer-chrome');
+  if (editTarget) {
+    strip.hidden = false;
+    strip.innerHTML = `<span class="cc-label">editing message</span>
+      <button type="button" class="cc-x" id="cc-cancel">✕</button>`;
+  } else if (replyTarget) {
+    strip.hidden = false;
+    strip.innerHTML = `<span class="cc-label">replying to ${esc(replyTarget.who)}</span>
+      <span class="cc-quote">${esc((replyTarget.textPreview || '').slice(0, 90))}</span>
+      <button type="button" class="cc-x" id="cc-cancel">✕</button>`;
+  } else {
+    strip.hidden = true;
+    strip.innerHTML = '';
+    return;
+  }
+  $('cc-cancel').onclick = () => {
+    if (editTarget) $('in-msg').value = '';
+    clearComposerTargets();
+  };
+}
+
 $('composer').addEventListener('submit', async (e) => {
   e.preventDefault();
   const inp = $('in-msg');
   const text = inp.value;
   if (!text.trim() || !activeConv) return;
   inp.value = '';
-  const r = await window.pqmsg.sendMessage(activeConv, text);
+  let r;
+  if (editTarget) {
+    const id = editTarget.msgId;
+    clearComposerTargets();
+    r = await window.pqmsg.editMessage(activeConv, id, text);
+  } else if (replyTarget) {
+    const rt = replyTarget.msgId;
+    clearComposerTargets();
+    r = await window.pqmsg.sendMessage(activeConv, text, { replyTo: rt });
+  } else {
+    r = await window.pqmsg.sendMessage(activeConv, text);
+  }
   if (!r.ok) {
     logLine(`<span class="r">send error: ${esc(r.error)}</span>`);
     inp.value = text;
   }
 });
+$('in-msg').addEventListener('keydown', (e) => {
+  if (e.key === 'Escape') { $('in-msg').value = editTarget ? '' : $('in-msg').value; clearComposerTargets(); }
+});
+
+// ---------- message context menu + emoji picker ----------
+function closeMenus() {
+  document.querySelectorAll('.ctx-menu, .emoji-pop').forEach((n) => n.remove());
+}
+document.addEventListener('click', closeMenus);
+document.addEventListener('scroll', closeMenus, true);
+
+function openMessageMenu(m, x, y) {
+  closeMenus();
+  const menu = document.createElement('div');
+  menu.className = 'ctx-menu';
+  const items = [];
+  items.push({ label: '↩  reply', fn: () => setReplyTarget({ msgId: m.msgId, who: m.mine ? 'You' : m.sender, textPreview: m.text || (m.attachment ? '📎 ' + m.attachment.name : '') }) });
+  items.push({ label: '😊  react', fn: () => openEmojiPicker(m, x, y) });
+  if (m.canEdit) items.push({ label: '✎  edit', fn: () => setEditTarget(m) });
+  if (m.text) items.push({ label: '⧉  copy text', fn: () => navigator.clipboard && navigator.clipboard.writeText(m.text) });
+  for (const it of items) {
+    const b = document.createElement('button');
+    b.type = 'button';
+    b.textContent = it.label;
+    b.onclick = (ev) => { ev.stopPropagation(); closeMenus(); it.fn(); };
+    menu.appendChild(b);
+  }
+  positionPop(menu, x, y);
+}
+
+const QUICK_EMOJI = ['👍', '❤️', '😂', '🎉', '😮', '😢', '🙏', '🔥'];
+function openEmojiPicker(m, x, y) {
+  closeMenus();
+  const pop = document.createElement('div');
+  pop.className = 'emoji-pop';
+  const row = document.createElement('div');
+  row.className = 'ep-row';
+  for (const e of QUICK_EMOJI) {
+    const b = document.createElement('button');
+    b.type = 'button';
+    b.textContent = e;
+    b.onclick = (ev) => { ev.stopPropagation(); closeMenus(); window.pqmsg.reactToMessage(activeConv, m.msgId, e); };
+    row.appendChild(b);
+  }
+  const inp = document.createElement('input');
+  inp.placeholder = 'any emoji + enter';
+  inp.maxLength = 8;
+  inp.onkeydown = (ev) => {
+    ev.stopPropagation();
+    if (ev.key === 'Enter' && inp.value.trim()) { closeMenus(); window.pqmsg.reactToMessage(activeConv, m.msgId, inp.value.trim()); }
+  };
+  pop.appendChild(row);
+  pop.appendChild(inp);
+  positionPop(pop, x, y);
+  inp.focus();
+}
+function positionPop(el, x, y) {
+  el.style.position = 'fixed';
+  el.style.left = Math.min(x, window.innerWidth - 190) + 'px';
+  el.style.top = Math.min(y, window.innerHeight - 180) + 'px';
+  el.onclick = (e) => e.stopPropagation();
+  document.body.appendChild(el);
+}
 
 // ---------- render ----------
 window.pqmsg.onUpdate((s) => {
@@ -295,7 +413,9 @@ async function renderThread() {
   $('thread-head').innerHTML = `<b>${title}</b>${membersLine} · ${conv.kind} · seq ${conv.cursorSeq} · reconciled ${recon}${homeLine}`;
   $('composer').hidden = false;
 
-  const key = conv.messages.map((m) => m.msgId + m.display + m.serverSeq).join('|');
+  const key = conv.messages
+    .map((m) => m.msgId + m.display + m.serverSeq + (m.text || '') + JSON.stringify(m.reactions || []))
+    .join('|');
   const box = $('messages');
   const wasBottom = box.scrollHeight - box.scrollTop - box.clientHeight < 40;
   box.innerHTML = '';
@@ -303,6 +423,7 @@ async function renderThread() {
     const d = document.createElement('div');
     d.className = 'bubble ' + (m.mine ? 'out' : 'in') + (key !== lastRenderKey ? ' flash' : '');
     d.dataset.display = m.display;
+    d.dataset.msgId = m.msgId;
     const when = new Date(m.sentAt).toLocaleTimeString();
     let status = '';
     if (m.mine) {
@@ -319,11 +440,94 @@ async function renderThread() {
     } else if (m.display === 'received') {
       status = m.verified ? ' · ✓ sig ok' : '';
     }
-    d.innerHTML = `${esc(m.text)}<div class="meta">${m.mine ? 'you' : esc(m.sender)} · ${when} · #${m.serverSeq ?? '—'}${status}</div>`;
+
+    const quote = m.replyTo
+      ? `<div class="quote" data-jump="${esc(m.replyTo.msgId)}"><span class="qh">${esc(m.replyTo.who)} said:</span>${esc(m.replyTo.textPreview || '')}</div>`
+      : '';
+    const att = renderAttachment(m.attachment);
+    const bodyText = m.text ? `<div class="btext">${esc(m.text)}</div>` : '';
+    const reax = renderReactions(m);
+    d.innerHTML =
+      quote + att + bodyText +
+      `<div class="meta">${m.mine ? 'you' : esc(m.sender)} · ${when} · #${m.serverSeq ?? '—'}${status}</div>` +
+      reax;
+
+    // right-click / ctrl-click -> context menu
+    d.addEventListener('contextmenu', (e) => { e.preventDefault(); openMessageMenu(m, e.clientX, e.clientY); });
+    d.addEventListener('click', (e) => {
+      const jump = e.target.closest('.quote');
+      if (jump && jump.dataset.jump) { scrollToMsg(jump.dataset.jump); return; }
+      const chip = e.target.closest('.rechip');
+      if (chip) { window.pqmsg.reactToMessage(activeConv, m.msgId, chip.dataset.emoji); return; }
+      if (e.ctrlKey || e.metaKey) { e.preventDefault(); openMessageMenu(m, e.clientX, e.clientY); }
+    });
+    attachSwipeToReply(d, m);
     box.appendChild(d);
   }
   lastRenderKey = key;
   if (wasBottom) box.scrollTop = box.scrollHeight;
+}
+
+function renderReactions(m) {
+  if (!m.reactions || !m.reactions.length) return '';
+  return (
+    '<div class="reacts">' +
+    m.reactions
+      .map(
+        (r) =>
+          `<span class="rechip${r.mine ? ' mine' : ''}" data-emoji="${esc(r.emoji)}" title="${esc(r.who.join(', '))}">${esc(r.emoji)} ${r.count}</span>`
+      )
+      .join('') +
+    '</div>'
+  );
+}
+function renderAttachment(a) {
+  if (!a) return '';
+  const kb = a.size ? (a.size < 1024 ? a.size + ' B' : (a.size / 1024).toFixed(1) + ' KB') : '';
+  if (a.isImage && a.dataUrl) {
+    return `<img class="att-img" src="${a.dataUrl}" alt="${esc(a.name)}" data-save="${esc(a.name)}" />`;
+  }
+  return `<div class="att-file" data-save="${esc(a.name)}"><span class="af-i">📄</span><span class="af-n">${esc(a.name)}</span><span class="af-s">${kb} · click to save</span></div>`;
+}
+function scrollToMsg(msgId) {
+  const el = $('messages').querySelector(`[data-msg-id="${CSS.escape(msgId)}"]`);
+  if (el) {
+    el.scrollIntoView({ behavior: 'smooth', block: 'center' });
+    el.classList.add('flash');
+    setTimeout(() => el.classList.remove('flash'), 500);
+  }
+}
+
+// Two-finger horizontal swipe *toward the centre* of the thread = reply.
+// A trackpad two-finger swipe arrives as wheel events with deltaX; we
+// accumulate it briefly and fire once past a threshold in the inward
+// direction (leftward for your own right-aligned bubbles, rightward for
+// the other person's left-aligned ones).
+function attachSwipeToReply(el, m) {
+  let acc = 0;
+  let t0 = 0;
+  const inward = m.mine ? -1 : 1; // sign of deltaX that moves toward centre
+  el.addEventListener(
+    'wheel',
+    (e) => {
+      if (Math.abs(e.deltaX) < Math.abs(e.deltaY)) return; // vertical scroll, ignore
+      const now = Date.now();
+      if (now - t0 > 300) acc = 0;
+      t0 = now;
+      acc += e.deltaX;
+      const progress = Math.max(0, Math.min(1, (acc * inward) / 90));
+      el.style.transform = progress > 0 ? `translateX(${inward * progress * 22}px)` : '';
+      el.style.opacity = progress > 0 ? String(1 - progress * 0.25) : '';
+      if (acc * inward > 90) {
+        acc = 0;
+        el.style.transform = '';
+        el.style.opacity = '';
+        setReplyTarget({ msgId: m.msgId, who: m.mine ? 'You' : m.sender, textPreview: m.text || (m.attachment ? '📎 ' + m.attachment.name : '') });
+      }
+    },
+    { passive: true }
+  );
+  el.addEventListener('mouseleave', () => { acc = 0; el.style.transform = ''; el.style.opacity = ''; });
 }
 
 function selectConv(id) {
