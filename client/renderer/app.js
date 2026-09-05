@@ -7,6 +7,21 @@ let activeConv = null;
 let lastRenderKey = '';
 let lastUser = null; // detects a login/switch so a previous account's open thread doesn't linger on screen
 
+// Surface any renderer-side error somewhere visible instead of failing
+// silently (a blank screen). On the login step there is no console footer
+// yet, so use the message line there.
+function reportUiError(msg) {
+  msg = String(msg || 'unknown error');
+  const loginVisible = $('login') && !$('login').hidden;
+  if (loginVisible && $('login-msg')) {
+    $('login-msg').className = 'msg';
+    $('login-msg').textContent = 'ui error: ' + msg;
+  }
+  try { logLine(`<span class="r">ui error: ${esc(msg)}</span>`); } catch {}
+}
+window.addEventListener('error', (e) => reportUiError(e.message || (e.error && e.error.message)));
+window.addEventListener('unhandledrejection', (e) => reportUiError('promise: ' + (e.reason && e.reason.message ? e.reason.message : e.reason)));
+
 // ---------- login ----------
 $('btn-register').onclick = async () => {
   const m = $('login-msg');

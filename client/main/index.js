@@ -4,6 +4,17 @@ const fs = require('fs');
 const { app, BrowserWindow, ipcMain, shell, dialog, nativeImage, Notification } = require('electron');
 const { Engine } = require('./engine');
 
+// Some Windows GPU drivers black-screen an Electron window on the first
+// non-trivial repaint — typing into a field on the login screen is a common
+// trigger. A text app does not need the GPU compositor, so turn it off there
+// (must happen before app is ready). Force it back on with PQMSG_GPU=1.
+if (process.platform === 'win32' && process.env.PQMSG_GPU !== '1') {
+  app.disableHardwareAcceleration();
+}
+// Also skip the on-disk GPU shader cache, which is another Windows
+// black-screen / corruption source and buys nothing here.
+app.commandLine.appendSwitch('disable-gpu-shader-disk-cache');
+
 // which conversation the renderer is showing + whether our window is focused
 let activeView = { convId: null, focused: true };
 
@@ -150,15 +161,26 @@ function createWindow() {
     height: 760,
     minWidth: 780,
     minHeight: 520,
+    show: false, // reveal on ready-to-show so there is no blank/black flash
     backgroundColor: '#0b0f14',
     title: `pqmsg — ${PROFILE}`,
     webPreferences: {
       preload: path.join(__dirname, '..', 'preload.js'),
       contextIsolation: true,
       nodeIntegration: false,
+      spellcheck: false, // avoids a Windows spellcheck-service crash path; not needed here
     },
   });
   win.loadFile(path.join(__dirname, '..', 'renderer', 'index.html'));
+  win.once('ready-to-show', () => win.show());
+  // if the renderer process ever dies (GPU/compositor fault, OOM), reload it
+  // instead of leaving a black window.
+  win.webContents.on('render-process-gone', (_e, details) => {
+    console.error('[renderer gone]', details);
+    if (engine) engine.reportDiagnostic('render-process-gone', details.reason || 'unknown', { exitCode: details.exitCode });
+    if (win && !win.isDestroyed()) win.webContents.reload();
+  });
+  win.webContents.on('unresponsive', () => console.error('[renderer unresponsive]'));
 
   let pending = null;
   const push = () => {
