@@ -106,6 +106,33 @@ async function section(name, fn) {
   });
 
   // ========================================================================
+  // Upgrade safety: installs from before per-account folders existed kept
+  // everything flat directly under the profile dir. Without a migration, an
+  // update would silently drop an existing logged-in user back to the login
+  // screen (their data would still be on disk, just no longer where the new
+  // store code looks for it).
+  await section('ClientStore migrates a pre-existing flat-layout profile on first load', async () => {
+    const migDir = path.join(TMP, 'migrate');
+    const profileDir = path.join(migDir, 'default');
+    fs.mkdirSync(path.join(profileDir, 'conversations'), { recursive: true });
+    fs.writeFileSync(path.join(profileDir, 'identity.json'), JSON.stringify({ username: 'legacyuser', deviceId: 'd-legacy', token: 'tok' }));
+    fs.writeFileSync(path.join(profileDir, 'contacts.json'), JSON.stringify({ someone: { devices: [] } }));
+    fs.writeFileSync(path.join(profileDir, 'conversations', 'conv1.json'), JSON.stringify({ convId: 'conv1', messages: {}, order: [] }));
+
+    process.env.PQMSG_DATA_DIR = migDir;
+    delete require.cache[require.resolve('../client/main/store')];
+    const { ClientStore } = require('../client/main/store');
+    const s = new ClientStore('default');
+
+    assert.strictEqual(s.username, 'legacyuser', 'the pre-existing account becomes active automatically');
+    assert.deepStrictEqual(s.loadIdentity(), { username: 'legacyuser', deviceId: 'd-legacy', token: 'tok' }, 'identity carried over intact');
+    assert.deepStrictEqual(s.loadContacts(), { someone: { devices: [] } }, 'cached contacts carried over');
+    assert.deepStrictEqual(s.listConversationIds(), ['conv1'], 'cached conversations carried over');
+    assert.ok(!fs.existsSync(path.join(profileDir, 'identity.json')), 'old flat identity.json is gone (moved, not copied)');
+    ok('an upgrade from the old flat layout is migrated in place — no forced re-login, nothing lost');
+  });
+
+  // ========================================================================
   // Regression test for a real bug caught live: a profile whose saved
   // identity points at a server that's gone forever (e.g. leftover from
   // local dev testing) would retry resume() forever with backoff. If the
@@ -113,24 +140,33 @@ async function section(name, fn) {
   // that stale timer would eventually fire, "succeed" at failing again, and
   // silently flip needsLogin back to false — which looked like the app
   // randomly bouncing between the login screen and the dashboard.
-  await section('switchAccount(): wipes local state and cannot be clobbered by a stale resume retry', async () => {
+  //
+  // switchAccount() itself used to wipe the whole profile back to a blank
+  // slate. It now just detaches from the active account — each account's
+  // keys and cached data live in their own folder under accounts/<username>
+  // and are never deleted by switching away from them.
+  await section('switchAccount(): detaches without deleting local state, and cannot be clobbered by a stale resume retry', async () => {
     delete require.cache[require.resolve('../client/main/engine')];
     const { Engine } = require('../client/main/engine');
     const fs = require('fs');
 
     const e = new Engine('switch-test', path.join(TMP, 'switch'), '0.1.0');
+    e.store.setActiveAccount('old');
     e.identity = { username: 'old', serverUrl: 'http://localhost:1', token: 'tok', deviceId: 'd1' };
     e.store.saveIdentity(e.identity);
     e.store.saveContact('somebody', { devices: [] });
-    assert.ok(fs.existsSync(path.join(e.store.dir, 'identity.json')));
-    assert.ok(fs.existsSync(path.join(e.store.dir, 'contacts.json')));
+    const oldAccountDir = e.store._accountDir('old');
+    assert.ok(fs.existsSync(path.join(oldAccountDir, 'identity.json')));
+    assert.ok(fs.existsSync(path.join(oldAccountDir, 'contacts.json')));
 
     e.switchAccount();
-    assert.strictEqual(e.identity, null, 'identity cleared in memory');
+    assert.strictEqual(e.identity, null, 'identity cleared from the in-memory session');
     assert.strictEqual(e.needsLogin, true);
-    assert.ok(!fs.existsSync(path.join(e.store.dir, 'identity.json')), 'identity.json removed from disk');
-    assert.ok(!fs.existsSync(path.join(e.store.dir, 'contacts.json')), 'cached contacts removed too — nothing leaks to the next account');
-    ok('switchAccount() fully resets identity + cached local data for this profile');
+    assert.strictEqual(e.store.username, null, 'no account is active after switching away');
+    assert.deepStrictEqual(e.store.loadContacts(), {}, 'nothing is readable with no active account');
+    assert.ok(fs.existsSync(path.join(oldAccountDir, 'identity.json')), 'identity.json stays on disk — not deleted');
+    assert.ok(fs.existsSync(path.join(oldAccountDir, 'contacts.json')), 'cached contacts stay on disk too — recoverable by logging back in');
+    ok('switchAccount() detaches the session without deleting the account\'s own folder');
 
     // the race: a resume() retry already in flight when switchAccount() is called
     const e2 = new Engine('switch-test-2', path.join(TMP, 'switch2'), '0.1.0');
@@ -158,7 +194,7 @@ async function section(name, fn) {
   await until(async () => (await fetch(BASE + '/api/health').catch(() => null))?.ok, 5000);
   ok(`server up on ${BASE}`);
 
-  await section('switchAccount(): repeated back-and-forth against a real server', async () => {
+  await section('switchAccount(): each account keeps its own device + history across repeated back-and-forth', async () => {
     process.env.PQMSG_SERVER_URL = BASE;
     process.env.PQMSG_DATA_DIR = path.join(TMP, 'roundtrip');
     delete require.cache[require.resolve('../client/main/engine')];
@@ -178,43 +214,60 @@ async function section(name, fn) {
       if (r.needs2fa) await e.completeLogin({ code: r.devCode, rememberDevice: false });
       return e.identity.deviceId;
     };
-    const assertBlank = (label) => {
+    const assertDetached = (label) => {
       assert.strictEqual(e.identity, null, `${label}: identity cleared`);
       assert.strictEqual(e.needsLogin, true, `${label}: needsLogin true`);
-      assert.deepStrictEqual(e.store.loadContacts(), {}, `${label}: no leftover cached contacts`);
-      assert.deepStrictEqual(e.store.listConversationIds(), [], `${label}: no leftover cached conversations`);
+      assert.strictEqual(e.store.username, null, `${label}: no active account`);
+      assert.deepStrictEqual(e.store.loadContacts(), {}, `${label}: nothing readable with no active account`);
     };
 
-    // round 1: alice
+    // round 1: alice — cache a contact under her own account folder
     const aliceDevice1 = await enroll('rtalice');
     assert.strictEqual(e.identity.username, 'rtalice');
+    e.store.saveContact('alices-secret-contact', { devices: [], safetyNumber: 'alice-only' });
     e.switchAccount();
-    assertBlank('after switch #1');
+    assertDetached('after switch #1');
 
-    // round 2: a different account on the same now-blank profile
+    // round 2: a different, never-before-seen account on the same device
     const bobDevice = await enroll('rtbob');
     assert.strictEqual(e.identity.username, 'rtbob', 'switching does not leave the old username bound');
-    assert.notStrictEqual(bobDevice, aliceDevice1, 'a fresh identity means a fresh device keypair');
+    assert.notStrictEqual(bobDevice, aliceDevice1, 'a brand-new account still mints a fresh device keypair');
+    assert.deepStrictEqual(e.store.loadContacts(), {}, "bob's fresh folder does not see alice's cached contact");
     e.switchAccount();
-    assertBlank('after switch #2');
+    assertDetached('after switch #2');
 
-    // round 3: log back into the FIRST account by password — its server-side
-    // account still exists (only local state was wiped), so this should
-    // enroll a brand-new device for it rather than fail
+    // round 3: log back into the FIRST account by password + 2FA — this
+    // device has used this exact account before, so it must be recognized
+    // as the SAME device (same deviceId) and recover its own cached data,
+    // not enroll as a stranger.
     const aliceDevice2 = await login('rtalice');
     assert.strictEqual(e.identity.username, 'rtalice', 'can log back into a previously-used account after switching away from it');
-    assert.notStrictEqual(aliceDevice2, aliceDevice1, 'logging back in after a wipe enrolls a new device, not a resurrected old one');
+    assert.strictEqual(aliceDevice2, aliceDevice1, 'logging back into a previously-used account reuses its device identity — no needless new device');
+    assert.deepStrictEqual(e.store.loadContacts(), { 'alices-secret-contact': { devices: [], safetyNumber: 'alice-only', fetchedAt: e.store.loadContacts()['alices-secret-contact'].fetchedAt } }, "alice's own cached contact is exactly as she left it");
     e.switchAccount();
-    assertBlank('after switch #3');
+    assertDetached('after switch #3');
 
-    // round 4: a third, never-before-seen account — repeated cycling doesn't degrade
+    // round 4: back into bob — his own folder, still isolated from alice's
+    const bobDevice2 = await login('rtbob');
+    assert.strictEqual(bobDevice2, bobDevice, 'bob is likewise recognized as the same device on return');
+    assert.deepStrictEqual(e.store.loadContacts(), {}, "bob's folder never picked up alice's cached contact");
+    e.switchAccount();
+    assertDetached('after switch #4');
+
+    // round 5: a third, never-before-seen account — repeated cycling doesn't degrade
     await enroll('rtcarol');
     assert.strictEqual(e.identity.username, 'rtcarol');
-    assert.strictEqual(e._resumeGen >= 3, true, 'generation counter keeps advancing across repeated switches');
+    assert.strictEqual(e._resumeGen >= 4, true, 'generation counter keeps advancing across repeated switches');
     e.switchAccount();
-    assertBlank('after switch #4');
+    assertDetached('after switch #5');
 
-    ok('switchAccount() can be exercised back and forth repeatedly — different new accounts, and returning to a previously-used one — with no leftover state and no failures');
+    // both accounts' folders coexist on disk the whole time — nothing was ever deleted
+    const fs = require('fs');
+    assert.ok(fs.existsSync(path.join(e.store._accountDir('rtalice'), 'identity.json')), "alice's folder still exists");
+    assert.ok(fs.existsSync(path.join(e.store._accountDir('rtbob'), 'identity.json')), "bob's folder still exists");
+    assert.ok(fs.existsSync(path.join(e.store._accountDir('rtcarol'), 'identity.json')), "carol's folder still exists");
+
+    ok('switchAccount() can be exercised back and forth repeatedly — each account keeps its own device identity and cached data, fully isolated from the others, with no leftover cross-contamination');
   });
   process.env.PQMSG_DATA_DIR = path.join(TMP, 'server'); // restore — later sections assume this points at the server's own data dir
 

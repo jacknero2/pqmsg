@@ -168,9 +168,9 @@ $('btn-logout').onclick = async () => {
 };
 $('btn-switch-account').onclick = async () => {
   const sure = confirm(
-    'Switch account? This forgets this device entirely — its keys and every locally cached ' +
-    'conversation — so it can no longer decrypt this account’s past messages on this machine. ' +
-    'A different account can then log in or register here.'
+    'Log out and switch to a different account? Nothing is deleted — this account’s keys and ' +
+    'message history stay on this device, and logging back in (password + the emailed code) ' +
+    'picks up right where you left off.'
   );
   if (!sure) return;
   await window.pqmsg.switchAccount();
@@ -330,7 +330,10 @@ function fmtEvent(ev) {
     'safety-number-changed': (e) => `<span class="r">⚠ safety number changed for @${e.username}</span>`,
     'send-failed': (e) => `<span class="r">✗ send failed: ${esc(e.error)}</span>`,
     'sync-error': (e) => `<span class="r">sync error: ${esc(e.error)}</span>`,
-    enroll: (e) => `<span class="k">✦ enrolled</span> ${esc(e.deviceName)} = ${short(e.deviceId)}`,
+    enroll: (e) =>
+      e.returning
+        ? `<span class="k">✦ welcome back</span> ${esc(e.deviceName)} — recognized as the same device, history restored`
+        : `<span class="k">✦ enrolled</span> ${esc(e.deviceName)} = ${short(e.deviceId)}`,
     'ws-open': () => `<span class="k">≋ websocket connected</span>`,
     'conversation-open': (e) => `→ opened @${e.username} · ${e.devices} device(s) · safety ${e.safetyNumber?.slice(0, 14)}…`,
   };

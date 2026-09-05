@@ -75,7 +75,13 @@ ML-KEM + ML-DSA is the construction Signal's PQXDH and Apple's iMessage PQ3 use.
   days idle — closing the app doesn't require logging in again.
 - On first login the client generates its **ML-KEM-1024** and **ML-DSA-87**
   keypairs locally. The private keys never leave the device
-  (`~/.pqmsg/<profile>/identity.json` in dev; the OS app-data dir when packaged).
+  (`~/.pqmsg/<profile>/accounts/<username>/identity.json` in dev; the OS
+  app-data dir when packaged). A single install can hold several accounts
+  side by side, each in its own folder — switching accounts only ever logs
+  out, it never deletes anything, and logging back into an account you've
+  used on this device before (password + the emailed code) reuses that
+  account's own device keys and cached message history rather than
+  re-enrolling as a stranger.
 - The public keys plus a self-signed *enrollment attestation* (proving the
   device holds the signing key and binding it to the username) are published to
   the server's **IDS** (Identity Directory Service). `GET /api/ids/:user` is

@@ -186,12 +186,12 @@ class Engine extends EventEmitter {
       err.code = 'UPDATE_REQUIRED';
       throw err;
     }
-    if (this.identity && norm(this.identity.username) !== username) {
-      throw new Error(`profile "${this.store.profile}" is already bound to @${this.identity.username}; use a different PQMSG_PROFILE`);
-    }
+    // Trust tokens are stored per-account (see store.js) — peek at this
+    // username's own saved config without creating or activating its
+    // folder; that only happens once login actually succeeds.
+    const trustToken = (this.store.peekAppConfig(username).trust || {})[this._trustKey(serverUrl)] || null;
 
     const api = new Api(serverUrl);
-    const trustToken = (this.store.loadAppConfig().trust || {})[this._trustKey(serverUrl)] || null;
     const r = await api.login(username, password, trustToken);
 
     if (r.token) {
@@ -218,10 +218,22 @@ class Engine extends EventEmitter {
     return this._finishLogin({ serverUrl: p.serverUrl, username: p.username, deviceName: p.deviceName, token: r.token });
   }
 
-  /** shared tail of both login paths: (re)enroll this device and start syncing */
+  /**
+   * shared tail of both login paths: (re)enroll this device and start syncing.
+   *
+   * Activating the account here — only once the password + 2FA challenge has
+   * actually succeeded — is what gates access to its local folder: there is
+   * no other place in the app that points the store at a given username's
+   * data. If this exact username has logged in on this device before, its
+   * saved identity (device keys, deviceId) is reused rather than minted
+   * fresh, so it keeps recognizing this as the same device and keeps the
+   * ability to decrypt its own retained message history.
+   */
   async _finishLogin({ serverUrl, username, deviceName, token }) {
     const api = new Api(serverUrl, token);
-    let id = this.identity;
+    const returning = this.store.hasLocalAccount(username);
+    this.store.setActiveAccount(username);
+    let id = this.store.loadIdentity();
     if (!id) {
       const keys = pqc.generateIdentity();
       id = {
@@ -231,6 +243,7 @@ class Engine extends EventEmitter {
         deviceId: pqc.deviceIdFromSigPub(keys.sigPublicKey),
       };
     }
+    id.username = username;
     id.serverUrl = serverUrl;
     id.token = token;
 
@@ -247,7 +260,7 @@ class Engine extends EventEmitter {
     this.store.saveIdentity(id);
     this.api = api;
     this.needsLogin = false;
-    this.event('enroll', { username, deviceId, deviceName: id.deviceName });
+    this.event('enroll', { username, deviceId, deviceName: id.deviceName, returning });
     this.startLoops();
     this.connectWs();
     this.syncOnce('post-login').catch(() => {});
@@ -341,13 +354,13 @@ class Engine extends EventEmitter {
   }
 
   /**
-   * Forget this device's account entirely and return to a blank first-run
-   * state, so a different account can register/log in on this same install —
-   * "log out" alone can't do this: the identity (and thus the username it's
-   * permanently bound to) stays on disk so the *same* account can resume
-   * without re-enrolling. This wipes it, plus all locally cached conversation
-   * plaintext/contacts, so nothing from the old account leaks into the next
-   * one that logs in here.
+   * Step away from the current account and return to a blank login screen,
+   * so a different account can log in on this same install. This does NOT
+   * delete anything: the current account's keys and locally cached message
+   * history stay exactly where they are, in its own folder, and the only
+   * way back into them is that account's own password + 2FA — logging in
+   * again as any account that has used this device before reunites it with
+   * its own retained device identity and history via _finishLogin.
    */
   switchAccount() {
     this._resumeGen++;
@@ -357,7 +370,7 @@ class Engine extends EventEmitter {
     if (this.ws) try { this.ws.close(); } catch {}
     this.ws = null;
     this.connected = false;
-    this.store.resetProfile();
+    this.store.setActiveAccount(null);
     this.identity = null;
     this.api = null;
     this._pending2fa = null;
