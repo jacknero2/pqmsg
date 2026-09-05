@@ -18,6 +18,7 @@
     "e2e:2fa": "node scripts/e2e-2fa.js",
     "e2e:network": "node scripts/e2e-network-resilience.js",
     "e2e:admin": "node scripts/e2e-admin.js",
+    "e2e:messaging": "node scripts/e2e-messaging.js",
     "icon": "node scripts/make-icon.js",
     "dist": "electron-builder --config build/client.yml --publish never"
   },

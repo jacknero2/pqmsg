@@ -537,25 +537,39 @@ class Engine extends EventEmitter {
     this.emit('update');
   }
 
+  /**
+   * Every enrolled device of every participant — INCLUDING this sending
+   * device. We used to skip our own device ("it already has plaintext"),
+   * but that made our own sent messages impossible to recover from the
+   * envelope: if the local plaintext record was ever lost, the message
+   * showed forever as "sent from another device". Wrapping a copy for
+   * ourselves costs one extra KEM slot and makes our history self-healing.
+   */
   async gatherRecipients(participants) {
     const out = [];
     for (const h of participants) {
       const ids = await this.refreshContact(h);
       const owner = pqc.normHandle(h);
       for (const d of ids.devices) {
-        if (d.deviceId === this.identity.deviceId) continue; // our own sending device already has plaintext
         out.push({ deviceId: d.deviceId, kemPublicKey: d.kemPublicKey, owner });
       }
     }
-    return out;
+    // de-dupe (a participant list can repeat our own handle in odd cases)
+    const seen = new Set();
+    return out.filter((r) => (seen.has(r.deviceId) ? false : seen.add(r.deviceId)));
   }
 
   // -- send ----------------------------------------------------------
-  async sendMessage(convId, text) {
+  /**
+   * Encrypt one message body, record it locally, queue it, and flush.
+   * `body` is the plaintext JSON payload (kind: text | edit | reaction | file).
+   * `local` describes how to reflect it in the local store immediately:
+   *   - { bubble: {...} }  -> a new visible message record (text / file)
+   *   - { apply: fn(conv) } -> mutate existing records (edit / reaction), no new bubble
+   */
+  async _sendBody(convId, body, local) {
     const conv = this.store.loadConversation(convId);
     if (!conv) throw new Error('unknown conversation');
-    text = String(text);
-    if (!text.trim()) return;
 
     const seq = (conv.lamport || 0) + 1;
     conv.lamport = seq;
@@ -563,7 +577,7 @@ class Engine extends EventEmitter {
     const recipients = await this.gatherRecipients(conv.participants);
 
     const envelope = pqc.encryptEnvelope({
-      body: { v: 1, kind: 'text', text },
+      body,
       sender: this.myHandle,
       senderDevice: this.identity.deviceId,
       convId,
@@ -573,23 +587,39 @@ class Engine extends EventEmitter {
       sigSecretKey: this.identity.sigSecretKey,
     });
 
-    conv.messages[envelope.msgId] = {
-      msgId: envelope.msgId,
-      sender: this.myHandle,
-      senderDevice: this.identity.deviceId,
-      sentAt: envelope.sentAt,
-      seq,
-      prevId,
-      text,
-      direction: 'out',
-      state: 'pending',
-      outRecipients: recipients.filter((r) => r.owner !== this.myHandle).map((r) => r.deviceId),
-      deliveries: {},
-      serverSeq: null,
-    };
-    if (!conv.order.includes(envelope.msgId)) conv.order.push(envelope.msgId);
+    const peerDevices = recipients.filter((r) => r.owner !== this.myHandle).map((r) => r.deviceId);
+    if (local.bubble) {
+      conv.messages[envelope.msgId] = {
+        msgId: envelope.msgId,
+        sender: this.myHandle,
+        senderDevice: this.identity.deviceId,
+        sentAt: envelope.sentAt,
+        seq,
+        prevId,
+        direction: 'out',
+        state: 'pending',
+        outRecipients: peerDevices,
+        deliveries: {},
+        serverSeq: null,
+        ...local.bubble,
+      };
+      if (!conv.order.includes(envelope.msgId)) conv.order.push(envelope.msgId);
+    } else {
+      // control message (edit / reaction): still ordered by the server, but
+      // never rendered as its own bubble — track it so we can show delivery
+      // state on the message it targets.
+      conv.meta = conv.meta || {};
+      conv.controlMsgs = conv.controlMsgs || {};
+      conv.controlMsgs[envelope.msgId] = {
+        msgId: envelope.msgId, kind: body.kind, targetId: body.targetId,
+        senderDevice: this.identity.deviceId, sentAt: envelope.sentAt,
+        outRecipients: peerDevices, deliveries: {}, state: 'pending', serverSeq: null,
+      };
+      if (!conv.order.includes(envelope.msgId)) conv.order.push(envelope.msgId);
+    }
+    if (local.apply) local.apply(conv);
     this.store.saveConversation(conv);
-    this.event('encrypted', { convId, msgId: envelope.msgId, forDevices: recipients.length });
+    this.event('encrypted', { convId, msgId: envelope.msgId, forDevices: recipients.length, kind: body.kind });
     this.emit('update');
 
     const outbox = this.store.loadOutbox();
@@ -601,9 +631,79 @@ class Engine extends EventEmitter {
       name: conv.name || null,
       homeServer: conv.homeServer,
       msgId: envelope.msgId,
+      control: !local.bubble,
+      targetId: body.targetId || null,
     });
     this.store.saveOutbox(outbox);
     await this.flushOutbox();
+    return envelope.msgId;
+  }
+
+  async sendMessage(convId, text, opts = {}) {
+    text = String(text == null ? '' : text);
+    if (!text.trim() && !opts.replyTo) return;
+    const body = { v: 1, kind: 'text', text };
+    if (opts.replyTo) body.replyTo = this._replyStub(convId, opts.replyTo);
+    return this._sendBody(convId, body, {
+      bubble: { text, replyTo: body.replyTo || null },
+    });
+  }
+
+  /** Edit one of your own already-sent messages in place (no "edited" marker shown). */
+  async editMessage(convId, targetId, text) {
+    const conv = this.store.loadConversation(convId);
+    if (!conv) throw new Error('unknown conversation');
+    const target = conv.messages[targetId];
+    if (!target) throw new Error('no such message');
+    if (target.direction !== 'out' || !this.isMe(target.sender)) throw new Error('can only edit your own messages');
+    text = String(text == null ? '' : text);
+    if (!text.trim()) return;
+    return this._sendBody(convId, { v: 1, kind: 'edit', targetId, text }, {
+      apply: (c) => {
+        const m = c.messages[targetId];
+        if (m) {
+          m.text = text;
+          m.editedLocallyAt = Date.now();
+          m.state = 'pending'; // red again until the edit envelope is delivered
+          m.editPending = true;
+        }
+      },
+    });
+  }
+
+  /** Toggle an emoji reaction on any message in the conversation. */
+  async reactToMessage(convId, targetId, emoji) {
+    const conv = this.store.loadConversation(convId);
+    if (!conv) throw new Error('unknown conversation');
+    if (!conv.messages[targetId]) throw new Error('no such message');
+    emoji = String(emoji || '').trim();
+    if (!emoji) return;
+    const me = this.myHandle;
+    const cur = (conv.messages[targetId].reactions || {})[emoji] || [];
+    const op = cur.includes(me) ? 'remove' : 'add';
+    return this._sendBody(convId, { v: 1, kind: 'reaction', targetId, emoji, op }, {
+      apply: (c) => this._applyReaction(c, { targetId, emoji, op, sender: me }),
+    });
+  }
+
+  _applyReaction(conv, { targetId, emoji, op, sender }) {
+    const m = conv.messages[targetId];
+    if (!m) return;
+    m.reactions = m.reactions || {};
+    const list = new Set(m.reactions[emoji] || []);
+    if (op === 'remove') list.delete(sender);
+    else list.add(sender);
+    if (list.size) m.reactions[emoji] = [...list];
+    else delete m.reactions[emoji];
+  }
+
+  /** Compact quote of a message, embedded in a reply's body + local record. */
+  _replyStub(convId, msgId) {
+    const conv = this.store.loadConversation(convId);
+    const m = conv && conv.messages[msgId];
+    if (!m) return null;
+    const t = m.text != null ? String(m.text) : (m.attachment ? `📎 ${m.attachment.name}` : '');
+    return { msgId, sender: m.sender, textPreview: t.slice(0, 140) };
   }
 
   async flushOutbox() {
@@ -617,20 +717,22 @@ class Engine extends EventEmitter {
           body: { envelope: item.envelope, participants: item.participants, kind: item.kind, name: item.name },
         });
         const conv = this.store.loadConversation(item.convId);
-        const rec = conv && conv.messages[item.msgId];
+        const rec = conv && (conv.messages[item.msgId] || (conv.controlMsgs && conv.controlMsgs[item.msgId]));
         if (rec) {
           rec.serverSeq = stored.serverSeq;
           rec.deliveries = stored.deliveries || {};
           rec.state = this._deliveredEnough(rec) ? 'delivered' : 'sent';
+          if (item.control && rec.state !== 'pending') this._clearEditPending(conv, item.targetId, rec);
           this.store.saveConversation(conv);
         }
-        this.event('sent', { convId: item.convId, msgId: item.msgId, serverSeq: stored.serverSeq });
+        this.event('sent', { convId: item.convId, msgId: item.msgId, serverSeq: stored.serverSeq, control: !!item.control });
       } catch (e) {
         if (e.status && e.status >= 400 && e.status < 500) {
           const conv = this.store.loadConversation(item.convId);
-          if (conv && conv.messages[item.msgId]) {
-            conv.messages[item.msgId].state = 'failed';
-            conv.messages[item.msgId].error = e.message;
+          const rec = conv && (conv.messages[item.msgId] || (conv.controlMsgs && conv.controlMsgs[item.msgId]));
+          if (rec) {
+            rec.state = 'failed';
+            rec.error = e.message;
             this.store.saveConversation(conv);
           }
           this.event('send-failed', { convId: item.convId, msgId: item.msgId, error: e.message });
@@ -647,6 +749,27 @@ class Engine extends EventEmitter {
     const d = rec.deliveries || {};
     if (rec.outRecipients && rec.outRecipients.length) return rec.outRecipients.some((id) => d[id]);
     return Object.keys(d).length > 0;
+  }
+
+  /** An edit is only honored if it comes from the same account that sent the original. */
+  _senderMayEdit(editSender, targetMsg) {
+    try {
+      return pqc.normHandle(editSender) === pqc.normHandle(targetMsg.sender);
+    } catch {
+      return false;
+    }
+  }
+
+  /** Once an edit's own envelope is delivered, the edited bubble stops being red. */
+  _clearEditPending(conv, targetId, controlRec) {
+    if (!targetId) return;
+    const m = conv.messages[targetId];
+    if (!m || !m.editPending) return;
+    // only clear if THIS control message is the latest edit we issued for it
+    m.editPending = false;
+    m.deliveries = controlRec.deliveries || m.deliveries || {};
+    m.outRecipients = controlRec.outRecipients || m.outRecipients;
+    m.state = this._deliveredEnough(m) ? 'delivered' : 'sent';
   }
 
   // -- sync --------------------------------------------------------
@@ -716,91 +839,158 @@ class Engine extends EventEmitter {
     let maxSeq = conv.cursorSeq;
     let changed = false;
 
+    conv.controlMsgs = conv.controlMsgs || {};
     for (const env of messages) {
       maxSeq = Math.max(maxSeq, env.serverSeq);
-      const mine = this.isMe(env.sender) && env.senderDevice === this.identity.deviceId;
+      const fromMyDevice = this.isMe(env.sender) && env.senderDevice === this.identity.deviceId;
+      const forMe = env.recipients.some((r) => r.deviceId === this.identity.deviceId);
       const existing = conv.messages[env.msgId];
+      const existingCtl = conv.controlMsgs[env.msgId];
 
-      if (mine) {
-        if (existing) {
-          existing.serverSeq = env.serverSeq;
-          existing.deliveries = env.deliveries || {};
-          const ns = this._deliveredEnough(existing) ? 'delivered' : 'sent';
-          if (ns !== existing.state && existing.state !== 'failed') {
-            existing.state = ns;
+      // ---- a control message we've already applied: just refresh its
+      //      delivery state, never fall through to bubble materialisation ----
+      if (existingCtl && existingCtl.applied) {
+        if (fromMyDevice) {
+          existingCtl.deliveries = env.deliveries || existingCtl.deliveries || {};
+          existingCtl.serverSeq = env.serverSeq;
+          existingCtl.state = this._deliveredEnough(existingCtl) ? 'delivered' : 'sent';
+          this._clearEditPending(conv, existingCtl.targetId, existingCtl);
+        }
+        continue;
+      }
+
+      // ---- a message we can open (ours, or addressed to us) --------------
+      if (forMe) {
+        // signature check against the sender device's registered key
+        let verified = false;
+        try {
+          const sids = await this.refreshContact(env.sender);
+          const sdev = sids.devices.find((d) => d.deviceId === env.senderDevice);
+          verified = sdev ? pqc.verifyEnvelope(env, sdev.sigPublicKey) : false;
+        } catch {}
+
+        let body = null, decErr = null;
+        // don't re-decrypt something already fully materialised
+        const alreadyDone = existing && existing.text != null && !existing.locked;
+        if (!alreadyDone) {
+          try {
+            body = pqc.decryptEnvelope(env, this.identity.deviceId, this.identity.kemSecretKey).body;
+          } catch (e) {
+            decErr = e;
+          }
+        }
+
+        if (body && (body.kind === 'edit' || body.kind === 'reaction')) {
+          // control message: apply its effect, never render it as a bubble
+          if (body.kind === 'edit') {
+            const t = conv.messages[body.targetId];
+            if (t && this._senderMayEdit(env.sender, t)) {
+              t.text = String(body.text == null ? '' : body.text);
+              if (fromMyDevice) { t.editPending = false; }
+              changed = true;
+            }
+          } else {
+            this._applyReaction(conv, { targetId: body.targetId, emoji: body.emoji, op: body.op, sender: pqc.normHandle(env.sender) });
             changed = true;
           }
+          conv.controlMsgs[env.msgId] = {
+            ...(existingCtl || {}),
+            msgId: env.msgId, kind: body.kind, targetId: body.targetId,
+            senderDevice: env.senderDevice, sentAt: env.sentAt, serverSeq: env.serverSeq,
+            deliveries: env.deliveries || {}, applied: true,
+            outRecipients: existingCtl ? existingCtl.outRecipients : undefined,
+            acked: existingCtl ? existingCtl.acked : (fromMyDevice ? undefined : false),
+            state: fromMyDevice ? (this._deliveredEnough({ deliveries: env.deliveries || {}, outRecipients: existingCtl && existingCtl.outRecipients }) ? 'delivered' : 'sent') : 'received',
+          };
+          if (fromMyDevice) this._clearEditPending(conv, body.targetId, conv.controlMsgs[env.msgId]);
+          continue;
+        }
+
+        if (existing && existing.text != null && !existing.locked) {
+          // already have it — just refresh server-assigned + delivery fields
+          existing.serverSeq = env.serverSeq;
+          if (fromMyDevice) {
+            existing.deliveries = env.deliveries || {};
+            if (!existing.editPending && existing.state !== 'failed') {
+              const ns = this._deliveredEnough(existing) ? 'delivered' : 'sent';
+              if (ns !== existing.state) { existing.state = ns; changed = true; }
+            }
+          }
+          continue;
+        }
+
+        // materialise a normal (text/file) message
+        const b = body || {};
+        const rec = {
+          msgId: env.msgId, sender: env.sender, senderDevice: env.senderDevice, sentAt: env.sentAt,
+          seq: env.seq, prevId: env.prevId,
+          direction: fromMyDevice ? 'out' : 'in',
+          serverSeq: env.serverSeq,
+          verified,
+          replyTo: b.replyTo || null,
+        };
+        if (decErr) {
+          rec.text = `[undecryptable: ${decErr.message}]`;
+          rec.state = 'suspect';
+        } else if (b.kind === 'file') {
+          rec.attachment = { name: b.name, mime: b.mime, size: b.size, isImage: !!b.isImage, dataB64: b.dataB64 };
+          rec.text = b.text || '';
+          rec.state = fromMyDevice ? 'sent' : verified ? 'received' : 'suspect';
         } else {
-          conv.messages[env.msgId] = {
-            msgId: env.msgId, sender: env.sender, senderDevice: env.senderDevice, sentAt: env.sentAt,
-            seq: env.seq, prevId: env.prevId, direction: 'out', state: 'sent', otherDevice: true,
-            text: '· sent from another of your devices ·', serverSeq: env.serverSeq, deliveries: env.deliveries || {},
-          };
-          changed = true;
+          rec.text = String(b.text == null ? '' : b.text);
+          rec.state = fromMyDevice ? 'sent' : verified ? 'received' : 'suspect';
         }
+        if (!fromMyDevice) rec.acked = false;
+        if (fromMyDevice) {
+          rec.deliveries = env.deliveries || {};
+          rec.state = this._deliveredEnough(rec) ? 'delivered' : 'sent';
+        }
+        conv.messages[env.msgId] = rec;
+        changed = true;
+        if (!fromMyDevice) this.event('decrypted', { convId: conv.convId, msgId: env.msgId, from: env.sender, verified });
         continue;
       }
 
-      const forMe = env.recipients.some((r) => r.deviceId === this.identity.deviceId);
-      if (!forMe) {
-        if (!existing) {
-          conv.messages[env.msgId] = {
-            msgId: env.msgId, sender: env.sender, sentAt: env.sentAt, seq: env.seq, prevId: env.prevId,
-            direction: 'in', state: 'locked', locked: true, text: '🔒 message for another device', serverSeq: env.serverSeq,
-          };
-          changed = true;
-        }
-        continue;
-      }
-      if (existing && existing.text != null && !existing.locked) {
+      // ---- not addressed to this device -------------------------------
+      if (!existing && !existingCtl) {
+        conv.messages[env.msgId] = {
+          msgId: env.msgId, sender: env.sender, sentAt: env.sentAt, seq: env.seq, prevId: env.prevId,
+          direction: this.isMe(env.sender) ? 'out' : 'in', state: 'locked', locked: true,
+          text: this.isMe(env.sender) ? '· sent from another of your devices ·' : '🔒 message for another device',
+          serverSeq: env.serverSeq,
+        };
+        changed = true;
+      } else if (existing) {
         existing.serverSeq = env.serverSeq;
-        continue; // already decrypted
       }
-
-      let verified = false;
-      try {
-        const sids = await this.refreshContact(env.sender);
-        const sdev = sids.devices.find((d) => d.deviceId === env.senderDevice);
-        verified = sdev ? pqc.verifyEnvelope(env, sdev.sigPublicKey) : false;
-      } catch {}
-      let text, ok = true;
-      try {
-        text = pqc.decryptEnvelope(env, this.identity.deviceId, this.identity.kemSecretKey).body.text;
-      } catch (e) {
-        text = `[undecryptable: ${e.message}]`;
-        ok = false;
-      }
-      conv.messages[env.msgId] = {
-        msgId: env.msgId, sender: env.sender, senderDevice: env.senderDevice, sentAt: env.sentAt,
-        seq: env.seq, prevId: env.prevId, direction: 'in',
-        state: verified && ok ? 'received' : 'suspect', verified, text, serverSeq: env.serverSeq,
-        acked: false,
-      };
-      changed = true;
-      this.event('decrypted', { convId: conv.convId, msgId: env.msgId, from: env.sender, verified });
     }
 
     // --- delivery acks: retry every cycle until confirmed (server is idempotent) ---
-    for (const m of Object.values(conv.messages)) {
-      if (m.direction === 'in' && m.acked === false && m.text != null && !m.locked) {
-        try {
-          await this._fed('POST', conv.homeServer, `/api/conv/${conv.convId}/messages/${m.msgId}/delivered`, {
-            body: { deviceId: this.identity.deviceId },
-            auth: true,
-            convId: conv.convId,
-          });
-          m.acked = true;
-          changed = true;
-          this.event('delivered', { convId: conv.convId, msgId: m.msgId });
-        } catch {
-          /* keep acked:false, retry next sync */
-        }
+    // normal inbound bubbles, plus inbound control messages (peer edits /
+    // reactions) so the peer's own edit/reaction can flip to "delivered".
+    const ackTargets = [
+      ...Object.values(conv.messages).filter((m) => m.direction === 'in' && m.acked === false && m.text != null && !m.locked),
+      ...Object.values(conv.controlMsgs).filter((c) => c.applied && c.state === 'received' && c.acked === false),
+    ];
+    for (const m of ackTargets) {
+      try {
+        await this._fed('POST', conv.homeServer, `/api/conv/${conv.convId}/messages/${m.msgId}/delivered`, {
+          body: { deviceId: this.identity.deviceId },
+          auth: true,
+          convId: conv.convId,
+        });
+        m.acked = true;
+        changed = true;
+        this.event('delivered', { convId: conv.convId, msgId: m.msgId });
+      } catch {
+        /* keep acked:false, retry next sync */
       }
     }
 
     // --- reconcile ordering to the server's canonical order -------------
-    const tail = conv.order.filter((id) => !order.includes(id) && conv.messages[id]);
-    const nextOrder = [...order.filter((id) => conv.messages[id]), ...tail];
+    const known = (id) => conv.messages[id] || (conv.controlMsgs && conv.controlMsgs[id]);
+    const tail = conv.order.filter((id) => !order.includes(id) && known(id));
+    const nextOrder = [...order.filter(known), ...tail];
     if (nextOrder.join('|') !== conv.order.join('|')) {
       conv.order = nextOrder;
       changed = true;
@@ -816,12 +1006,33 @@ class Engine extends EventEmitter {
   _displayState(m) {
     if (m.direction === 'out') {
       if (m.state === 'failed') return 'failed';
+      if (m.editPending) return 'undelivered'; // edited, edit not yet delivered -> red again
       if (m.state === 'delivered') return 'delivered';
       return 'undelivered'; // pending | sent | otherDevice
     }
     if (m.locked) return 'locked';
     if (m.state === 'suspect') return 'suspect';
     return 'received';
+  }
+  _reactionsView(m) {
+    const r = m.reactions || {};
+    return Object.keys(r)
+      .filter((e) => (r[e] || []).length)
+      .map((emoji) => ({
+        emoji,
+        count: r[emoji].length,
+        mine: r[emoji].some((h) => this.isMe(h)),
+        who: r[emoji].map((h) => this.prettyHandle(h)),
+      }));
+  }
+  _replyView(rt) {
+    if (!rt) return null;
+    return {
+      msgId: rt.msgId,
+      who: this.isMe(rt.sender) ? 'You' : this.prettyHandle(rt.sender),
+      mine: this.isMe(rt.sender),
+      textPreview: rt.textPreview || '',
+    };
   }
   /** "@alice" if same server as me, else "alice@host" (scheme stripped) */
   prettyHandle(h) {
@@ -855,6 +1066,13 @@ class Engine extends EventEmitter {
         verified: m.verified,
         deliveries: m.deliveries ? Object.keys(m.deliveries).length : 0,
         error: m.error,
+        reactions: this._reactionsView(m),
+        replyTo: this._replyView(m.replyTo),
+        attachment: m.attachment
+          ? { name: m.attachment.name, mime: m.attachment.mime, size: m.attachment.size, isImage: !!m.attachment.isImage,
+              dataUrl: m.attachment.isImage && m.attachment.dataB64 ? `data:${m.attachment.mime};base64,${m.attachment.dataB64}` : null }
+          : null,
+        canEdit: m.direction === 'out' && !m.locked && !m.attachment && m.text != null,
       }));
     return {
       convId,
