@@ -68,18 +68,13 @@
 
       <div id="newconv">
         <span class="prompt">to:</span>
-        <input id="in-to" placeholder="username" autocomplete="off" />
-        <button id="btn-open" class="primary sm">open</button>
-        <button id="btn-group" class="ghost sm">＋ group</button>
+        <div id="recip-box">
+          <span id="recip-chips"></span>
+          <input id="in-to" placeholder="username — space or enter to add, add more for a group" autocomplete="off" />
+          <div id="ac-drop" hidden></div>
+        </div>
+        <button id="btn-open" class="primary sm">start</button>
         <span id="newconv-msg" class="msg"></span>
-        <span id="conv-pick"></span>
-      </div>
-      <div id="groupbar" hidden>
-        <span class="prompt">group:</span>
-        <input id="in-gname" placeholder="group name" autocomplete="off" />
-        <input id="in-gmembers" placeholder="alice, bob, carol" autocomplete="off" />
-        <button id="btn-gcreate" class="primary sm">create</button>
-        <button id="btn-gcancel" class="ghost sm">cancel</button>
       </div>
 
       <main>

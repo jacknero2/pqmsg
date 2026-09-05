@@ -94,67 +94,137 @@ function renderUpdate(s) {
   if (showBanner) $('ub-text').textContent = `pqmsg ${s.updateInfo.latest} is available (you have ${s.appVersion}).`;
 }
 
-// ---------- new conversation ----------
-$('btn-open').onclick = () => openConv();
-$('in-to').addEventListener('keydown', (e) => e.key === 'Enter' && openConv());
-async function openConv(explicitHandle) {
+// ---------- new conversation / group (one tokenised "to:" field) ----------
+const norm = (s) => String(s || '').trim().replace(/^@/, '').replace(/@.*$/, '').toLowerCase();
+let recips = []; // [{ username, exists: null | true | false }]
+let people = []; // autocomplete source, refreshed lazily
+let acIndex = -1;
+
+async function refreshPeople() {
+  const r = await window.pqmsg.peopleSuggestions();
+  if (r.ok) people = r.data || [];
+}
+refreshPeople();
+
+function renderChips() {
+  const box = $('recip-chips');
+  box.innerHTML = recips
+    .map((r, i) => {
+      const cls = r.exists === true ? 'ok' : r.exists === false ? 'bad' : 'pending';
+      return `<span class="rchip ${cls}" data-i="${i}">@${esc(r.username)}<button type="button" class="rx" data-i="${i}">✕</button></span>`;
+    })
+    .join('');
+  for (const b of box.querySelectorAll('.rx')) b.onclick = () => { recips.splice(+b.dataset.i, 1); renderChips(); $('in-to').focus(); };
+  $('btn-open').textContent = recips.length >= 2 ? 'start group' : 'start';
+}
+
+async function commitToken(raw) {
+  const u = norm(raw);
+  $('in-to').value = '';
+  hideAC();
+  if (!u) return;
+  if (u === norm(state && state.username)) { flashMsg('that is you'); return; }
+  if (recips.some((r) => r.username === u)) return;
+  const entry = { username: u, exists: null };
+  recips.push(entry);
+  renderChips();
+  const r = await window.pqmsg.userExists(u);
+  entry.exists = !!(r.ok && r.data);
+  renderChips();
+}
+
+function flashMsg(t, ok) {
   const m = $('newconv-msg');
-  $('conv-pick').innerHTML = '';
-  m.className = 'msg';
-  m.textContent = 'looking up…';
-  const r = await window.pqmsg.startConversation(explicitHandle || $('in-to').value.trim());
-  if (!r.ok) {
-    if (r.code === 'AMBIGUOUS' && r.candidates) {
-      m.textContent = r.error;
-      $('conv-pick').innerHTML = r.candidates
-        .map((c) => `<button class="pick" data-h="${c.handle.replace(/"/g, '&quot;')}">${c.label}</button>`)
-        .join('');
-      for (const b of $('conv-pick').querySelectorAll('.pick')) b.onclick = () => openConv(b.dataset.h);
-      return;
-    }
-    m.textContent = r.error;
+  m.className = 'msg' + (ok ? ' ok' : '');
+  m.textContent = t;
+}
+
+$('in-to').addEventListener('keydown', (e) => {
+  const drop = $('ac-drop');
+  if (!drop.hidden && (e.key === 'ArrowDown' || e.key === 'ArrowUp')) {
+    e.preventDefault();
+    const n = drop.children.length;
+    acIndex = (acIndex + (e.key === 'ArrowDown' ? 1 : -1) + n) % n;
+    paintACSel();
     return;
   }
-  m.className = 'msg ok';
-  m.textContent = 'keys retrieved';
+  if (e.key === 'Enter') {
+    e.preventDefault();
+    if (!drop.hidden && acIndex >= 0) return commitToken(drop.children[acIndex].dataset.u);
+    if ($('in-to').value.trim()) return commitToken($('in-to').value);
+    return startFromRecips();
+  }
+  if ((e.key === ' ' || e.key === ',') && $('in-to').value.trim()) {
+    e.preventDefault();
+    commitToken($('in-to').value);
+  }
+  if (e.key === 'Backspace' && !$('in-to').value && recips.length) {
+    recips.pop();
+    renderChips();
+  }
+  if (e.key === 'Escape') hideAC();
+});
+$('in-to').addEventListener('input', () => showAC($('in-to').value));
+$('in-to').addEventListener('blur', () => setTimeout(hideAC, 120));
+$('btn-open').onclick = () => {
+  if ($('in-to').value.trim()) return commitToken($('in-to').value).then(startFromRecips);
+  startFromRecips();
+};
+
+function showAC(q) {
+  const query = norm(q);
+  const taken = new Set(recips.map((r) => r.username));
+  const matches = people
+    .filter((p) => !taken.has(p.username) && (!query || p.username.includes(query)))
+    .slice(0, 8);
+  const drop = $('ac-drop');
+  if (!matches.length) return hideAC();
+  drop.innerHTML = matches
+    .map((p, i) => {
+      const when = p.lastChatAt ? timeAgo(p.lastChatAt) : 'no chats yet';
+      return `<div class="ac-row" data-u="${esc(p.username)}" data-i="${i}">@${esc(p.username)}<span class="ac-when">${esc(when)}</span></div>`;
+    })
+    .join('');
+  acIndex = -1;
+  for (const row of drop.querySelectorAll('.ac-row')) {
+    row.onmousedown = (e) => { e.preventDefault(); commitToken(row.dataset.u); };
+  }
+  drop.hidden = false;
+}
+function paintACSel() {
+  [...$('ac-drop').children].forEach((c, i) => c.classList.toggle('sel', i === acIndex));
+}
+function hideAC() { $('ac-drop').hidden = true; acIndex = -1; }
+function timeAgo(t) {
+  const s = Math.max(1, Math.round((Date.now() - t) / 1000));
+  if (s < 60) return s + 's ago';
+  if (s < 3600) return Math.round(s / 60) + 'm ago';
+  if (s < 86400) return Math.round(s / 3600) + 'h ago';
+  return Math.round(s / 86400) + 'd ago';
+}
+
+async function startFromRecips() {
+  const valid = recips.filter((r) => r.exists !== false);
+  const missing = recips.filter((r) => r.exists === false).map((r) => '@' + r.username);
+  if (missing.length) { flashMsg(`no account: ${missing.join(', ')}`); return; }
+  if (!valid.length) { flashMsg('add someone to message'); return; }
+  flashMsg('looking up…');
+  let r;
+  if (valid.length === 1) {
+    r = await window.pqmsg.startConversation(valid[0].username);
+  } else {
+    const members = valid.map((v) => v.username);
+    r = await window.pqmsg.startGroup(members.join(', '), members);
+  }
+  if (!r.ok) { flashMsg(r.error); return; }
+  recips = [];
+  renderChips();
+  flashMsg('');
   activeConv = r.data;
-  $('in-to').value = '';
+  await refreshPeople();
   await refresh();
   selectConv(activeConv);
 }
-
-// ---------- new group ----------
-$('btn-group').onclick = () => {
-  $('groupbar').hidden = !$('groupbar').hidden;
-};
-$('btn-gcancel').onclick = () => {
-  $('groupbar').hidden = true;
-};
-$('btn-gcreate').onclick = async () => {
-  const m = $('newconv-msg');
-  const name = $('in-gname').value.trim();
-  const members = $('in-gmembers').value.split(',').map((s) => s.trim()).filter(Boolean);
-  if (!name || members.length < 2) {
-    m.className = 'msg';
-    m.textContent = 'need a name and at least 2 members';
-    return;
-  }
-  m.className = 'msg';
-  m.textContent = 'resolving members…';
-  const r = await window.pqmsg.startGroup(name, members);
-  if (!r.ok) {
-    m.textContent = r.error;
-    return;
-  }
-  m.className = 'msg ok';
-  m.textContent = 'group created';
-  $('groupbar').hidden = true;
-  $('in-gname').value = $('in-gmembers').value = '';
-  activeConv = r.data;
-  await window.pqmsg.sendMessage(activeConv, `created “${name}”`);
-  await refresh();
-  selectConv(activeConv);
-};
 
 // ---------- header / settings ----------
 $('btn-sync').onclick = () => window.pqmsg.syncNow();

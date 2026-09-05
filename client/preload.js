@@ -12,6 +12,8 @@ contextBridge.exposeInMainWorld('pqmsg', {
   switchAccount: () => call('pqmsg:switchAccount'),
   startConversation: (username) => call('pqmsg:startConversation', { username }),
   startGroup: (name, members) => call('pqmsg:startGroup', { name, members }),
+  userExists: (username) => call('pqmsg:userExists', { username }),
+  peopleSuggestions: () => call('pqmsg:peopleSuggestions'),
   addGroupMember: (convId, handle) => call('pqmsg:addGroupMember', { convId, handle }),
   removeGroupMember: (convId, handle) => call('pqmsg:removeGroupMember', { convId, handle }),
   acceptConversation: (convId) => call('pqmsg:acceptConversation', { convId }),

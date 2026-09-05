@@ -160,6 +160,24 @@ const S = () => `http://127.0.0.1:${PORT}`;
     ok('operator account cleanup works and is auth-gated');
   });
 
+  // ---------------------------------------------------------------------
+  await section('compose helpers: dedupe DMs, user existence, ranked suggestions', async () => {
+    const e = mk('erin');
+    await enroll(e, 'erin');
+    assert.strictEqual(await e.userExists('alice'), true, 'existing user resolves');
+    assert.strictEqual(await e.userExists('nobody-here'), false, 'missing user does not');
+    const c1 = await e.startConversation('alice');
+    assert.strictEqual(e.existingDmWith('alice'), c1, 'existingDmWith finds the thread we just made');
+    const c2 = await e.startConversation('alice');
+    assert.strictEqual(c2, c1, 'a second startConversation with the same person returns the SAME thread');
+    assert.strictEqual(e.listConversationsView().filter((c) => c.convId === c1).length, 1, 'only one DM row for that person');
+    await e.startConversation('bob');
+    const sugg = e.peopleSuggestions().map((s) => s.username);
+    assert.deepStrictEqual(sugg, [...sugg].sort((a, b) => a.localeCompare(b)), 'suggestions are alphabetical first');
+    assert.ok(sugg.includes('alice') && sugg.includes('bob') && !sugg.includes('erin'), 'suggestions are people you have talked to, minus yourself');
+    ok('one DM per person, user-existence check, and alphabetical-then-recency suggestions');
+  });
+
   console.log(`\n${fail ? '\x1b[31m' : '\x1b[32m'}${pass} passed, ${fail} failed\x1b[0m`);
   try { fs.rmSync(TMP, { recursive: true, force: true }); } catch {}
   process.exit(fail ? 1 : 0);

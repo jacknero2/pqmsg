@@ -469,15 +469,67 @@ class Engine extends EventEmitter {
   async startConversation(input) {
     const other = this._asHandle(input);
     if (this.isMe(other)) throw new Error('cannot message yourself');
+    // one DM per person: if we already have this thread (even if it is a
+    // pending request), just hand back its id instead of anything new.
+    const convId = pqc.dmConvId(this.myHandle, other);
+    const already = this.store.loadConversation(convId);
+    if (already && (already.status || 'active') !== 'deleted') {
+      this.emit('update');
+      return convId;
+    }
     const ids = await this.refreshContact(other, true);
     if (!ids.devices.length) throw new Error(`${other} has no enrolled devices yet`);
     const parts = [this.myHandle, other];
-    const convId = pqc.dmConvId(parts[0], parts[1]);
     const home = pqc.homeServer(parts);
     this.store.ensureConversation(convId, parts, 'dm', home, null, 'active');
     this.event('conversation-open', { handle: other, convId, home, devices: ids.devices.length, safetyNumber: ids.safetyNumber });
     this.emit('update');
     return convId;
+  }
+
+  /** True if `username` has an account with at least one enrolled device. */
+  async userExists(username) {
+    try {
+      const ids = await this.api.ids(norm(String(username).replace(/@.*$/, '')));
+      return !!(ids && ids.devices && ids.devices.length);
+    } catch {
+      return false;
+    }
+  }
+
+  /** Do we already have a live DM with this person? -> its convId or null. */
+  existingDmWith(username) {
+    const convId = pqc.dmConvId(this.myHandle, this._asHandle(username));
+    const c = this.store.loadConversation(convId);
+    return c && (c.status || 'active') !== 'deleted' ? convId : null;
+  }
+
+  /**
+   * Autocomplete source for the "to:" field: everyone we've talked to plus
+   * everyone in our contact cache. Sorted alphabetically first, then by how
+   * recently we last had a conversation with them.
+   */
+  peopleSuggestions() {
+    const recency = {};
+    for (const id of this.store.listConversationIds()) {
+      const c = this.store.loadConversation(id);
+      if (!c || (c.status || 'active') === 'deleted') continue;
+      const t = c.lastReconciledAt || c.createdAt || 0;
+      for (const p of c.participants || []) {
+        if (this.isMe(p)) continue;
+        let u;
+        try { u = pqc.parseHandle(this._asHandle(p)).username; } catch { continue; }
+        recency[u] = Math.max(recency[u] || 0, t);
+      }
+    }
+    const set = new Set(Object.keys(recency));
+    for (const h of Object.keys(this.store.loadContacts() || {})) {
+      try { set.add(pqc.parseHandle(h).username); } catch {}
+    }
+    set.delete(this.me);
+    return [...set]
+      .map((u) => ({ username: u, lastChatAt: recency[u] || 0 }))
+      .sort((a, b) => a.username.localeCompare(b.username) || b.lastChatAt - a.lastChatAt);
   }
 
   async startGroup({ name, members }) {

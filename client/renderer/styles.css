@@ -116,16 +116,37 @@ header {
   display: flex; align-items: center; gap: 8px;
   padding: 8px 14px; border-bottom: 1px solid var(--line); background: var(--panel);
 }
-#newconv .prompt { color: var(--cyan); }
-#newconv input { flex: 0 1 240px; }
-#groupbar {
-  display: flex; align-items: center; gap: 8px;
-  padding: 8px 14px; border-bottom: 1px solid var(--line); background: var(--panel2);
+#newconv .prompt { color: var(--cyan); flex: 0 0 auto; }
+#recip-box {
+  position: relative; flex: 1 1 auto; display: flex; flex-wrap: wrap; align-items: center; gap: 5px;
+  border: 1px solid var(--line); border-radius: 6px; background: var(--panel2); padding: 4px 6px; min-height: 32px;
 }
-#groupbar .prompt { color: var(--gold); }
-#groupbar #in-gname { flex: 0 1 160px; }
-#groupbar #in-gmembers { flex: 1 1 240px; }
-#groupbar[hidden] { display: none; }
+#recip-box:focus-within { border-color: var(--cyan); }
+#recip-chips { display: contents; }
+.rchip {
+  display: inline-flex; align-items: center; gap: 5px;
+  font-size: 11px; padding: 2px 4px 2px 8px; border-radius: 10px;
+  border: 1px solid var(--cyan); color: var(--cyan); background: #10262a;
+}
+.rchip.pending { border-color: #2f6f9e; color: #8fc4e6; background: #0f1e2a; }
+.rchip.ok { border-color: var(--gold); color: var(--gold); background: #2c2410; }
+.rchip.bad { border-color: var(--lred); color: #ffbcbc; background: #2a1517; }
+.rchip .rx { border: 0; background: transparent; color: inherit; padding: 0 2px; font-size: 11px; line-height: 1; }
+.rchip .rx:hover { color: #fff; border: 0; }
+#in-to { flex: 1 1 90px; min-width: 90px; border: 0; background: transparent; padding: 4px 2px; }
+#in-to:focus { border: 0; }
+#ac-drop {
+  position: absolute; top: calc(100% + 4px); left: 0; right: 0; z-index: 30;
+  background: var(--panel); border: 1px solid var(--line); border-radius: 7px;
+  box-shadow: 0 12px 40px rgba(0,0,0,.6); overflow: hidden;
+}
+#ac-drop[hidden] { display: none; }
+.ac-row {
+  display: flex; justify-content: space-between; align-items: center; gap: 10px;
+  padding: 6px 10px; font-size: 12px; cursor: pointer;
+}
+.ac-row:hover, .ac-row.sel { background: #16232d; }
+.ac-row .ac-when { color: var(--dim); font-size: 10px; }
 
 #requests .reqs-h { padding: 8px 12px 4px; font-size: 10px; text-transform: uppercase; letter-spacing: 1px; color: var(--gold); }
 .req { padding: 10px 12px; border-bottom: 1px solid var(--line); background: #1c1a10; }
