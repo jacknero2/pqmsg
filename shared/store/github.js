@@ -175,6 +175,38 @@ class GitHubStore {
     return null;
   }
 
+  async setBlock(username, targetHandle, on) {
+    return this.mutex.run('accounts', async () => {
+      const all = (await this._getJson('accounts.json')) || {};
+      const acct = all[username];
+      if (!acct) throw Object.assign(new Error('no such account'), { status: 404 });
+      const set = new Set(acct.blocks || []);
+      on ? set.add(targetHandle) : set.delete(targetHandle);
+      acct.blocks = [...set];
+      await this._putJson('accounts.json', all, `pqmsg: block ${on ? '+' : '-'} for ${username}`);
+      return acct.blocks;
+    });
+  }
+  async getBlocks(username) {
+    const acct = await this.getAccount(username);
+    return (acct && acct.blocks) || [];
+  }
+  async hasBlocked(username, otherHandle) {
+    return (await this.getBlocks(username)).includes(otherHandle);
+  }
+  async deleteAccount(username) {
+    await this.mutex.run('accounts', async () => {
+      const all = (await this._getJson('accounts.json')) || {};
+      if (!all[username]) throw Object.assign(new Error('no such account'), { status: 404 });
+      delete all[username];
+      await this._putJson('accounts.json', all, `pqmsg: delete account ${username}`);
+    });
+    // conversation folders are left as-is on the GitHub backend (destructive
+    // tree deletes are awkward over the contents API); the account itself is
+    // gone, so logins, IDS lookups and new enrollments all fail.
+    return { username, removedConvs: 0 };
+  }
+
   // ---- conversations / messages ------------------------------------
   _cdir(c) {
     return `conversations/${c}`;

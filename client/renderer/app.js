@@ -177,6 +177,18 @@ $('btn-switch-account').onclick = async () => {
   await window.pqmsg.switchAccount();
   $('settings').hidden = true;
 };
+$('btn-delete-account').onclick = async () => {
+  const u = state && state.username;
+  const typed = prompt(
+    `This permanently deletes @${u} and all its data from the server, and wipes it from this ` +
+    `device. It cannot be undone.\n\nType the username "${u}" to confirm:`
+  );
+  if (typed == null) return;
+  if (typed.trim().toLowerCase() !== String(u).toLowerCase()) { alert('name did not match — nothing deleted'); return; }
+  const r = await window.pqmsg.deleteAccount();
+  $('settings').hidden = true;
+  if (!r.ok) alert('delete failed: ' + r.error);
+};
 $('si').addEventListener('input', (e) => {
   $('si-val').textContent = e.target.value;
 });
@@ -339,6 +351,44 @@ function positionPop(el, x, y) {
   document.body.appendChild(el);
 }
 
+// ---------- conversation (⋯) menu ----------
+function openThreadMenu(conv, x, y) {
+  closeMenus();
+  const menu = document.createElement('div');
+  menu.className = 'ctx-menu';
+  const items = [];
+  if (conv.kind === 'dm' && conv.peerUsername) {
+    if (conv.iBlockPeer) {
+      items.push({ label: '✓  unblock @' + conv.peerUsername, fn: () => window.pqmsg.unblockPeer(conv.convId) });
+    } else {
+      items.push({ label: '🚫  block @' + conv.peerUsername, danger: true, fn: () => window.pqmsg.blockPeer(conv.convId) });
+    }
+  }
+  items.push({
+    label: '🗑  delete chat',
+    danger: true,
+    fn: () => {
+      if (confirm('Delete this chat on your side? The other person keeps their copy. If they message you again it will come back as a new request.')) {
+        window.pqmsg.deleteConversation(conv.convId);
+        activeConv = null;
+        lastRenderKey = '';
+        $('thread-head').innerHTML = '';
+        $('messages').innerHTML = '';
+        $('composer').hidden = true;
+      }
+    },
+  });
+  for (const it of items) {
+    const b = document.createElement('button');
+    b.type = 'button';
+    b.textContent = it.label;
+    if (it.danger) b.className = 'danger';
+    b.onclick = (ev) => { ev.stopPropagation(); closeMenus(); it.fn(); };
+    menu.appendChild(b);
+  }
+  positionPop(menu, x - 140, y);
+}
+
 // ---------- render ----------
 window.pqmsg.onUpdate((s) => {
   state = s;
@@ -424,8 +474,20 @@ async function renderThread() {
   const title = conv.kind === 'group' ? `👥 ${esc(conv.name || 'group')}` : esc(others.join(', ') || 'you');
   const membersLine = conv.kind === 'group' ? ` · ${esc(conv.participants.join(', '))}` : '';
   const homeLine = conv.homeIsMine ? '' : ` · hosted on ${esc((conv.homeServer || '').replace(/^https?:\/\//, ''))}`;
-  $('thread-head').innerHTML = `<b>${title}</b>${membersLine} · ${conv.kind} · seq ${conv.cursorSeq} · reconciled ${recon}${homeLine}`;
+  $('thread-head').innerHTML =
+    `<span class="th-main"><b>${title}</b>${membersLine} · ${conv.kind} · seq ${conv.cursorSeq} · reconciled ${recon}${homeLine}</span>` +
+    `<button class="th-dots" id="th-dots" type="button" title="conversation options">⋯</button>`;
+  $('th-dots').onclick = (e) => { e.stopPropagation(); openThreadMenu(conv, e.clientX, e.clientY); };
   $('composer').hidden = false;
+
+  // blocked state: disable the composer with a clear notice
+  const blocked = conv.blockedByPeer;
+  $('composer').classList.toggle('blocked', !!blocked);
+  $('in-msg').disabled = !!blocked;
+  $('btn-attach').disabled = !!blocked;
+  $('in-msg').placeholder = blocked
+    ? `@${conv.peerUsername || 'this user'} has blocked you — you can’t reply`
+    : 'type a message…';
 
   const key = conv.messages
     .map((m) => m.msgId + m.display + m.serverSeq + (m.text || '') + JSON.stringify(m.reactions || []))
@@ -434,6 +496,13 @@ async function renderThread() {
   const wasBottom = box.scrollHeight - box.scrollTop - box.clientHeight < 40;
   box.innerHTML = '';
   for (const m of conv.messages) {
+    if (m.system) {
+      const s = document.createElement('div');
+      s.className = 'sysline';
+      s.textContent = `— ${m.text} —`;
+      box.appendChild(s);
+      continue;
+    }
     const d = document.createElement('div');
     d.className = 'bubble ' + (m.mine ? 'out' : 'in') + (key !== lastRenderKey ? ' flash' : '');
     d.dataset.display = m.display;

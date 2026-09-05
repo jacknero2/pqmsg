@@ -118,6 +118,57 @@ class LocalStore {
     return null;
   }
 
+  // ---- blocking ---------------------------------------------------------
+  /** @param {boolean} on  true = block, false = unblock */
+  async setBlock(username, targetHandle, on) {
+    return this.mutex.run('accounts', async () => {
+      const all = await this._readJson(this.accountsPath, {});
+      const acct = all[username];
+      if (!acct) throw Object.assign(new Error('no such account'), { status: 404 });
+      const set = new Set(acct.blocks || []);
+      on ? set.add(targetHandle) : set.delete(targetHandle);
+      acct.blocks = [...set];
+      await this._writeJson(this.accountsPath, all);
+      return acct.blocks;
+    });
+  }
+  async getBlocks(username) {
+    const acct = await this.getAccount(username);
+    return (acct && acct.blocks) || [];
+  }
+  /** Has `username` blocked `otherHandle`? (both directions checked by the caller) */
+  async hasBlocked(username, otherHandle) {
+    return (await this.getBlocks(username)).includes(otherHandle);
+  }
+
+  // ---- account deletion ----------------------------------------------
+  /**
+   * Remove an account: its credentials, devices (so IDS lookups + logins
+   * fail), block list, and any conversation whose participants are now all
+   * deleted. Conversations shared with a still-existing peer are left in
+   * place — the peer keeps their copy.
+   */
+  async deleteAccount(username) {
+    await this.mutex.run('accounts', async () => {
+      const all = await this._readJson(this.accountsPath, {});
+      if (!all[username]) throw Object.assign(new Error('no such account'), { status: 404 });
+      delete all[username];
+      await this._writeJson(this.accountsPath, all);
+    });
+    const remaining = new Set((await this.listAccounts()).map((a) => a.username));
+    let removedConvs = 0;
+    for (const meta of await this.listConversations()) {
+      const live = (meta.participants || []).some((h) => {
+        try { return remaining.has(require('../crypto').parseHandle(h).username); } catch { return false; }
+      });
+      if (!live) {
+        await fsp.rm(this._cdir(meta.convId), { recursive: true, force: true });
+        removedConvs++;
+      }
+    }
+    return { username, removedConvs };
+  }
+
   // ---- conversations / messages ------------------------------------
   _cdir(convId) {
     return path.join(this.convDir, convId);

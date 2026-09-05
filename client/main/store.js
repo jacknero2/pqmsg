@@ -117,6 +117,12 @@ class ClientStore {
     this._writeJson(this._p('identity.json'), id);
   }
 
+  /** Permanently delete one local account's folder (keys, history, everything). */
+  forgetLocalAccount(username) {
+    fs.rmSync(this._accountDir(username), { recursive: true, force: true });
+    if (this._safeName(username) === this._safeName(this.username)) this.setActiveAccount(null);
+  }
+
   // server discovery ------------------------------------------------
   loadAppConfig() {
     if (!this.username) return {};

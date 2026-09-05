@@ -139,3 +139,11 @@ footer .e .r { color: var(--lred); }
 .chart .bar { fill: var(--cyan); }
 .chart .bar:hover { fill: var(--gold); }
 .chart .axis { fill: var(--dim); font-size: 8px; font-family: var(--mono); }
+
+/* ---------------------------------------------------------------- account delete */
+.acct-del {
+  font-family: var(--mono); font-size: 9px; text-transform: uppercase; letter-spacing: .5px;
+  background: #2a1517; border: 1px solid var(--lred); color: #ffbcbc;
+  border-radius: 5px; padding: 1px 7px; margin-left: 8px; cursor: pointer;
+}
+.acct-del:hover { border-color: #ff4d4d; color: #fff; }

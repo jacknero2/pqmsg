@@ -280,6 +280,35 @@ app.get(
   })
 );
 
+// --------------------------------------------------------------------------
+// blocking + account deletion
+// --------------------------------------------------------------------------
+app.get('/api/blocks', auth, wrap(async (req, res) => {
+  res.json({ blocks: await store.getBlocks(req.user) });
+}));
+// blocks are keyed by bare username — there is only one server
+const blockTarget = (raw) => proto.normUser(String(raw || '').replace(/@.*$/, ''));
+app.post('/api/blocks', auth, wrap(async (req, res) => {
+  const target = blockTarget(req.body.username || req.body.handle);
+  if (!target) throw Object.assign(new Error('bad username'), { status: 400 });
+  if (target === req.user) throw Object.assign(new Error('cannot block yourself'), { status: 400 });
+  const blocks = await store.setBlock(req.user, target, true);
+  presence.log('block', { by: req.user, target });
+  res.json({ ok: true, blocks });
+}));
+app.delete('/api/blocks/:username', auth, wrap(async (req, res) => {
+  const blocks = await store.setBlock(req.user, blockTarget(req.params.username), false);
+  presence.log('unblock', { by: req.user, target: blockTarget(req.params.username) });
+  res.json({ ok: true, blocks });
+}));
+
+/** A user deletes their own account + data. Irreversible. */
+app.delete('/api/account', auth, wrap(async (req, res) => {
+  const out = await store.deleteAccount(req.user);
+  presence.log('account-deleted', { username: req.user, removedConvs: out.removedConvs });
+  res.json({ ok: true, ...out });
+}));
+
 // public: the IDS is device *public* keys + a safety number
 app.get(
   '/api/ids/:username',
@@ -339,6 +368,21 @@ app.post(
     if (!dev) throw Object.assign(new Error('unknown sender device'), { status: 400 });
     if (!pqc.verifyEnvelope(envelope, dev.sigPublicKey)) {
       throw Object.assign(new Error('bad envelope signature'), { status: 400 });
+    }
+
+    // blocking: if any other participant has blocked the sender, the send is
+    // refused. The blocker can still message the blocked user (e.g. the
+    // "you were blocked" / "unblocked" notices) — only the blocked -> blocker
+    // direction is cut.
+    if (store.hasBlocked) {
+      const senderUser = pqc.parseHandle(envelope.sender).username;
+      for (const p of parts) {
+        const pu = pqc.parseHandle(p).username;
+        if (pu === senderUser) continue;
+        if (await store.hasBlocked(pu, senderUser)) {
+          throw Object.assign(new Error('blocked'), { status: 403 });
+        }
+      }
     }
 
     const meta = await store.ensureConversation(convId, {
@@ -487,6 +531,13 @@ app.get('/api/admin/accounts', admin, wrap(async (req, res) => {
 app.get('/api/admin/conversations', admin, wrap(async (req, res) =>
   res.json({ conversations: await store.listConversations({ counts: true }) })
 ));
+/** Operator removes an account (e.g. clearing out test users). Irreversible. */
+app.delete('/api/admin/accounts/:username', admin, wrap(async (req, res) => {
+  const username = proto.normUser(req.params.username);
+  const out = await store.deleteAccount(username);
+  presence.log('admin-account-deleted', { username, removedConvs: out.removedConvs });
+  res.json({ ok: true, ...out });
+}));
 app.get('/api/admin/conv/:convId', admin, wrap(async (req, res) => {
   const meta = await store.getConversationMeta(req.params.convId);
   if (!meta) throw Object.assign(new Error('no such conversation'), { status: 404 });

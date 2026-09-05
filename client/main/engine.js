@@ -540,6 +540,84 @@ class Engine extends EventEmitter {
     this.emit('update');
   }
 
+  // -- delete a conversation (local, deleter-only) -------------------
+  /**
+   * Delete a conversation on THIS end only. The peer keeps their copy
+   * untouched. Local history is cleared and the thread hidden; if the peer
+   * later sends into it, the next sync sees new activity past the deletion
+   * point and re-surfaces it as a fresh incoming request (accept/decline),
+   * exactly like a brand-new conversation.
+   */
+  deleteConversation(convId) {
+    const conv = this.store.loadConversation(convId);
+    if (!conv) return;
+    const cleared = {
+      convId: conv.convId,
+      participants: conv.participants,
+      kind: conv.kind,
+      name: conv.name || null,
+      homeServer: conv.homeServer || null,
+      status: 'deleted',
+      deletedAt: Date.now(),
+      deletedThroughSeq: conv.cursorSeq || 0,
+      messages: {},
+      controlMsgs: {},
+      order: [],
+      cursorSeq: conv.cursorSeq || 0,
+      lamport: conv.lamport || 0,
+      createdAt: conv.createdAt || Date.now(),
+      lastReconciledAt: 0,
+    };
+    this.store.saveConversation(cleared);
+    this.event('conversation-deleted', { convId });
+    this.emit('update');
+  }
+
+  // -- block / unblock a DM peer ------------------------------------
+  _peerUsername(conv) {
+    const other = (conv.participants || []).find((p) => !this.isMe(p));
+    return other ? pqc.parseHandle(this._asHandle(other)).username : null;
+  }
+  async blockPeer(convId) {
+    const conv = this.store.loadConversation(convId);
+    if (!conv) throw new Error('unknown conversation');
+    const u = this._peerUsername(conv);
+    if (!u) throw new Error('no peer to block');
+    await this.api.block(u);
+    conv.iBlockPeer = true;
+    this.store.saveConversation(conv);
+    // tell them — the blocker CAN still message the blocked user
+    await this._sendBody(convId, { v: 1, kind: 'system', event: 'blocked' }, {
+      bubble: { system: true, sysEvent: 'blocked', sysActor: this.myHandle },
+    });
+    this.event('blocked', { convId, username: u });
+  }
+  async unblockPeer(convId) {
+    const conv = this.store.loadConversation(convId);
+    if (!conv) throw new Error('unknown conversation');
+    const u = this._peerUsername(conv);
+    if (!u) throw new Error('no peer to unblock');
+    await this.api.unblock(u);
+    conv.iBlockPeer = false;
+    this.store.saveConversation(conv);
+    await this._sendBody(convId, { v: 1, kind: 'system', event: 'unblocked' }, {
+      bubble: { system: true, sysEvent: 'unblocked', sysActor: this.myHandle },
+    });
+    this.event('unblocked', { convId, username: u });
+  }
+
+  // -- delete this account, server-side and locally ----------------
+  async deleteAccount() {
+    if (!this.api) throw new Error('not logged in');
+    await this.api.deleteAccount();
+    this.event('account-deleted', { username: this.me });
+    // tear down like switchAccount, then also wipe this account's folder
+    const username = this.identity && this.identity.username;
+    this.switchAccount();
+    if (username) this.store.forgetLocalAccount(username);
+    return { ok: true };
+  }
+
   /**
    * Every enrolled device of every participant — INCLUDING this sending
    * device. We used to skip our own device ("it already has plaintext"),
@@ -759,8 +837,9 @@ class Engine extends EventEmitter {
           if (rec) {
             rec.state = 'failed';
             rec.error = e.message;
-            this.store.saveConversation(conv);
           }
+          if (e.message === 'blocked' && conv) conv.blockedByPeer = true;
+          if (conv) this.store.saveConversation(conv);
           this.event('send-failed', { convId: item.convId, msgId: item.msgId, error: e.message });
         } else {
           keep.push(item); // transient — retry next cycle
@@ -837,6 +916,20 @@ class Engine extends EventEmitter {
           existed ? undefined : 'pending' // someone else started it -> needs accept/decline
         );
         if (conv.status === 'declined') continue;
+        if (conv.status === 'deleted') {
+          // deleted on this end — stay hidden unless the peer has since sent
+          // something new, in which case re-surface it as a fresh request.
+          if ((c.latestSeq || 0) > (conv.deletedThroughSeq || 0)) {
+            conv.status = 'pending';
+            conv.cursorSeq = conv.deletedThroughSeq || 0;
+            conv.hideThroughSeq = conv.deletedThroughSeq || 0; // pre-deletion history stays gone
+            delete conv.deletedAt;
+            this.store.saveConversation(conv);
+            this.event('conversation-resurfaced', { convId: c.convId });
+            this.emit('update');
+          }
+          continue;
+        }
         if (conv.status === 'pending') {
           this.emit('update');
           continue;
@@ -866,8 +959,10 @@ class Engine extends EventEmitter {
     let changed = false;
 
     conv.controlMsgs = conv.controlMsgs || {};
+    const hideThrough = conv.hideThroughSeq || 0;
     for (const env of messages) {
       maxSeq = Math.max(maxSeq, env.serverSeq);
+      if (env.serverSeq <= hideThrough) continue; // pre-deletion history, permanently hidden on this end
       const fromMyDevice = this.isMe(env.sender) && env.senderDevice === this.identity.deviceId;
       const forMe = env.recipients.some((r) => r.deviceId === this.identity.deviceId);
       const existing = conv.messages[env.msgId];
@@ -885,6 +980,15 @@ class Engine extends EventEmitter {
         continue;
       }
 
+      // ---- a system notice we've already placed: just refresh its state ---
+      if (existing && existing.system) {
+        if (fromMyDevice) {
+          existing.deliveries = env.deliveries || existing.deliveries || {};
+          existing.serverSeq = env.serverSeq;
+        }
+        continue;
+      }
+
       // ---- a message we can open (ours, or addressed to us) --------------
       if (forMe) {
         // signature check against the sender device's registered key
@@ -897,7 +1001,7 @@ class Engine extends EventEmitter {
 
         let body = null, decErr = null;
         // don't re-decrypt something already fully materialised
-        const alreadyDone = existing && existing.text != null && !existing.locked;
+        const alreadyDone = existing && ((existing.text != null && !existing.locked) || existing.system);
         if (!alreadyDone) {
           try {
             body = pqc.decryptEnvelope(env, this.identity.deviceId, this.identity.kemSecretKey).body;
@@ -929,6 +1033,26 @@ class Engine extends EventEmitter {
             state: fromMyDevice ? (this._deliveredEnough({ deliveries: env.deliveries || {}, outRecipients: existingCtl && existingCtl.outRecipients }) ? 'delivered' : 'sent') : 'received',
           };
           if (fromMyDevice) this._clearEditPending(conv, body.targetId, conv.controlMsgs[env.msgId]);
+          continue;
+        }
+
+        if (body && body.kind === 'system') {
+          // a visible, centred notice (block / unblock). Update the peer-block
+          // flag from the other side's action.
+          if (!fromMyDevice) {
+            if (body.event === 'blocked') conv.blockedByPeer = true;
+            if (body.event === 'unblocked') conv.blockedByPeer = false;
+          }
+          if (!existing) {
+            conv.messages[env.msgId] = {
+              msgId: env.msgId, sender: env.sender, senderDevice: env.senderDevice, sentAt: env.sentAt,
+              seq: env.seq, prevId: env.prevId, direction: fromMyDevice ? 'out' : 'in',
+              system: true, sysEvent: body.event, sysActor: env.sender,
+              serverSeq: env.serverSeq, state: fromMyDevice ? 'sent' : 'received',
+              deliveries: env.deliveries || {}, acked: fromMyDevice ? undefined : false,
+            };
+            changed = true;
+          }
           continue;
         }
 
@@ -995,7 +1119,7 @@ class Engine extends EventEmitter {
     // normal inbound bubbles, plus inbound control messages (peer edits /
     // reactions) so the peer's own edit/reaction can flip to "delivered".
     const ackTargets = [
-      ...Object.values(conv.messages).filter((m) => m.direction === 'in' && m.acked === false && m.text != null && !m.locked),
+      ...Object.values(conv.messages).filter((m) => m.direction === 'in' && m.acked === false && !m.locked && (m.text != null || m.system || m.attachment)),
       ...Object.values(conv.controlMsgs).filter((c) => c.applied && c.state === 'received' && c.acked === false),
     ];
     for (const m of ackTargets) {
@@ -1071,9 +1195,16 @@ class Engine extends EventEmitter {
       return String(h);
     }
   }
+  _sysText(m) {
+    const who = this.isMe(m.sysActor) ? 'You' : this.prettyHandle(m.sysActor);
+    const target = this.isMe(m.sysActor) ? 'this user' : 'you';
+    if (m.sysEvent === 'blocked') return `${who} blocked ${target}`;
+    if (m.sysEvent === 'unblocked') return `${who} unblocked ${target}`;
+    return '';
+  }
   getConversationView(convId) {
     const conv = this.store.loadConversation(convId);
-    if (!conv) return null;
+    if (!conv || conv.status === 'deleted') return null;
     const seen = new Set();
     const messages = conv.order
       .filter((id) => (seen.has(id) ? false : seen.add(id)))
@@ -1083,12 +1214,13 @@ class Engine extends EventEmitter {
         msgId: m.msgId,
         mine: m.direction === 'out',
         sender: this.prettyHandle(m.sender),
-        text: m.text,
+        text: m.system ? this._sysText(m) : m.text,
+        system: !!m.system,
         sentAt: m.sentAt,
         serverSeq: m.serverSeq,
         seq: m.seq,
         state: m.state,
-        display: this._displayState(m),
+        display: m.system ? 'system' : this._displayState(m),
         verified: m.verified,
         deliveries: m.deliveries ? Object.keys(m.deliveries).length : 0,
         error: m.error,
@@ -1099,7 +1231,7 @@ class Engine extends EventEmitter {
               dataB64: m.attachment.dataB64 || null,
               dataUrl: m.attachment.isImage && m.attachment.dataB64 ? `data:${m.attachment.mime};base64,${m.attachment.dataB64}` : null }
           : null,
-        canEdit: m.direction === 'out' && !m.locked && !m.attachment && m.text != null,
+        canEdit: m.direction === 'out' && !m.locked && !m.system && !m.attachment && m.text != null,
       }));
     return {
       convId,
@@ -1108,6 +1240,9 @@ class Engine extends EventEmitter {
       kind: conv.kind,
       name: conv.name || null,
       status: conv.status || 'active',
+      blockedByPeer: !!conv.blockedByPeer,
+      iBlockPeer: !!conv.iBlockPeer,
+      peerUsername: conv.kind === 'dm' ? this._peerUsername(conv) : null,
       homeServer: conv.homeServer || null,
       homeIsMine: conv.homeServer ? pqc.normServer(conv.homeServer) === pqc.parseHandle(this.myHandle).server : true,
       lastReconciledAt: conv.lastReconciledAt,
@@ -1120,6 +1255,7 @@ class Engine extends EventEmitter {
       .listConversationIds()
       .map((id) => this.store.loadConversation(id))
       .filter(Boolean)
+      .filter((conv) => (conv.status || 'active') !== 'deleted')
       .map((conv) => {
         const v = this.getConversationView(conv.convId);
         const last = v.messages[v.messages.length - 1];

@@ -228,10 +228,23 @@ function renderAccounts(accts) {
   $('acct-count').textContent = accts.length;
   $('accounts').innerHTML = accts.map((a) => `
     <div class="row">
-      <div class="a">@${esc(a.username)} <span class="dim">· ${a.deviceCount} device(s)</span></div>
+      <div class="a">@${esc(a.username)} <span class="dim">· ${a.deviceCount} device(s)</span>
+        <button class="acct-del" data-u="${esc(a.username)}" title="delete this account">delete</button></div>
       <div class="b">safety ${esc((a.safetyNumber || '').slice(0, 29))}…</div>
       ${a.devices.map((d) => `<div class="b">&nbsp;&nbsp;↳ ${d.online ? '<span class="on">●</span>' : '<span class="off">○</span>'} ${esc(d.deviceName)} · ${esc(d.deviceId).slice(0, 16)}… · kem:${esc(d.kemPublicKeyHead)}…</div>`).join('')}
     </div>`).join('') || '<div class="row b">no accounts</div>';
+  for (const b of $('accounts').querySelectorAll('.acct-del')) {
+    b.onclick = async () => {
+      const u = b.dataset.u;
+      if (!confirm(`Permanently delete @${u} and its data? This cannot be undone.`)) return;
+      try {
+        await api('/api/admin/accounts/' + encodeURIComponent(u), { method: 'DELETE' });
+        tick();
+      } catch (e) {
+        alert('delete failed: ' + e.message);
+      }
+    };
+  }
 }
 function renderConversations(convs) {
   $('conv-count').textContent = convs.length;

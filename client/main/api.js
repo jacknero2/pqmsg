@@ -70,6 +70,18 @@ class Api {
   ackDelivered(convId, msgId, deviceId) {
     return this.post(`/api/conv/${convId}/messages/${msgId}/delivered`, { deviceId });
   }
+  listBlocks() {
+    return this.get('/api/blocks');
+  }
+  block(username) {
+    return this.post('/api/blocks', { username });
+  }
+  unblock(username) {
+    return this._req('DELETE', '/api/blocks/' + encodeURIComponent(username));
+  }
+  deleteAccount() {
+    return this._req('DELETE', '/api/account');
+  }
   health() {
     return this.get('/api/health');
   }
