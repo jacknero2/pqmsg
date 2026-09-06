@@ -533,11 +533,11 @@ class Engine extends EventEmitter {
     const username = s.includes('@') ? s.slice(0, s.indexOf('@')) : s;
     return pqc.normHandle(`${username}@${this.identity ? this.identity.serverUrl : SERVER_URL}`);
   }
-  async refreshContact(handleInput, force = false) {
+  async refreshContact(handleInput, force = false, maxAgeMs = 60000) {
     const handle = this._asHandle(handleInput);
     const { username, server } = pqc.parseHandle(handle);
     const cached = this.store.getContact(handle);
-    if (!force && cached && Date.now() - cached.fetchedAt < 60000) return cached;
+    if (!force && cached && Date.now() - cached.fetchedAt < maxAgeMs) return cached;
     let ids;
     if (server === pqc.parseHandle(this.myHandle).server && this.api) {
       ids = await this.api.ids(username); // our own server — use the authed client
@@ -784,7 +784,12 @@ class Engine extends EventEmitter {
   async gatherRecipients(participants) {
     const out = [];
     for (const h of participants) {
-      const ids = await this.refreshContact(h);
+      // Refresh each participant's device list right before wrapping: a
+      // message can only ever be read by a device it was wrapped for, so a
+      // device enrolled in the last minute (yours or a peer's) must not be
+      // missed. `refreshContact` re-fetches when its cache is older than a
+      // few seconds; forced for our own account.
+      const ids = await this.refreshContact(h, this.isMe(h), 5000);
       const owner = pqc.normHandle(h);
       for (const d of ids.devices) {
         out.push({ deviceId: d.deviceId, kemPublicKey: d.kemPublicKey, owner });
@@ -1133,6 +1138,18 @@ class Engine extends EventEmitter {
           }
           continue;
         }
+        if (conv.status === 'pending' && !existed) {
+          // A conversation my own account has already taken part in (history
+          // lives on another of my devices) is not a new request — accept it
+          // silently on this device. Genuine incoming requests stay pending.
+          try {
+            const { messages } = await this._fedConvGet(conv, `/api/conv/${conv.convId}/messages`, { sinceSeq: 0 });
+            if ((messages || []).some((env) => this.isMe(env.sender))) {
+              conv.status = 'active';
+              this.store.saveConversation(conv);
+            }
+          } catch {}
+        }
         if (conv.status === 'pending') {
           this.emit('update');
           continue;
@@ -1197,10 +1214,11 @@ class Engine extends EventEmitter {
 
       // ---- a normal bubble we already have decrypted: fast path, no
       //      re-verify / re-decrypt every sync (this is the hot path for a
-      //      long conversation's trailing window) ----
-      if (existing && existing.text != null && !existing.locked) {
+      //      long conversation's trailing window). 'suspect' ones are the
+      //      exception — re-check them in case a stale IDS is why. ----
+      if (existing && existing.text != null && !existing.locked && existing.state !== 'suspect') {
         existing.serverSeq = env.serverSeq;
-        if (fromMyDevice) {
+        if (fromMyDevice || existing.otherDevice) {
           existing.deliveries = env.deliveries || {};
           const wasSeen = existing.seenBy && Object.keys(existing.seenBy).length;
           existing.seenBy = env.seenBy || existing.seenBy || {};
@@ -1223,6 +1241,15 @@ class Engine extends EventEmitter {
           verified = sdev ? pqc.verifyEnvelope(env, sdev.sigPublicKey) : false;
         } catch {}
 
+        // Same account, different device of mine, signature checks out against
+        // one of my account's registered device keys -> this IS my message,
+        // sent from elsewhere. Render it as outgoing; don't notify / count /
+        // ack it. It can't be edited from here (that would need this device's
+        // view of the original), so it carries a small "from your other
+        // device" note.
+        const mineElsewhere = this.isMe(env.sender) && !fromMyDevice && verified;
+        const asOut = fromMyDevice || mineElsewhere;
+
         let body = null, decErr = null;
         // anything not caught by the fast paths above still needs opening
         const alreadyDone = existing && ((existing.text != null && !existing.locked) || existing.system);
@@ -1240,7 +1267,7 @@ class Engine extends EventEmitter {
             const t = conv.messages[body.targetId];
             if (t && this._senderMayEdit(env.sender, t)) {
               t.text = String(body.text == null ? '' : body.text);
-              if (fromMyDevice) { t.editPending = false; }
+              if (asOut) { t.editPending = false; }
               changed = true;
             }
           } else {
@@ -1253,27 +1280,30 @@ class Engine extends EventEmitter {
             senderDevice: env.senderDevice, sentAt: env.sentAt, serverSeq: env.serverSeq,
             deliveries: env.deliveries || {}, applied: true,
             outRecipients: existingCtl ? existingCtl.outRecipients : undefined,
-            acked: existingCtl ? existingCtl.acked : (fromMyDevice ? undefined : false),
-            state: fromMyDevice ? (this._deliveredEnough({ deliveries: env.deliveries || {}, outRecipients: existingCtl && existingCtl.outRecipients }) ? 'delivered' : 'sent') : 'received',
+            acked: existingCtl ? existingCtl.acked : (asOut ? undefined : false),
+            state: asOut ? (this._deliveredEnough({ deliveries: env.deliveries || {}, outRecipients: existingCtl && existingCtl.outRecipients }) ? 'delivered' : 'sent') : 'received',
           };
-          if (fromMyDevice) this._clearEditPending(conv, body.targetId, conv.controlMsgs[env.msgId]);
+          if (asOut) this._clearEditPending(conv, body.targetId, conv.controlMsgs[env.msgId]);
           continue;
         }
 
         if (body && body.kind === 'system') {
-          // a visible, centred notice (block / unblock). Update the peer-block
-          // flag from the other side's action.
-          if (!fromMyDevice) {
+          // a visible, centred notice (block / unblock).
+          if (asOut) {
+            // my own block/unblock, possibly issued from another device
+            if (body.event === 'blocked') conv.iBlockPeer = true;
+            if (body.event === 'unblocked') conv.iBlockPeer = false;
+          } else {
             if (body.event === 'blocked') conv.blockedByPeer = true;
             if (body.event === 'unblocked') conv.blockedByPeer = false;
           }
           if (!existing) {
             conv.messages[env.msgId] = {
               msgId: env.msgId, sender: env.sender, senderDevice: env.senderDevice, sentAt: env.sentAt,
-              seq: env.seq, prevId: env.prevId, direction: fromMyDevice ? 'out' : 'in',
+              seq: env.seq, prevId: env.prevId, direction: asOut ? 'out' : 'in',
               system: true, sysEvent: body.event, sysActor: env.sender,
-              serverSeq: env.serverSeq, state: fromMyDevice ? 'sent' : 'received',
-              deliveries: env.deliveries || {}, acked: fromMyDevice ? undefined : false,
+              serverSeq: env.serverSeq, state: asOut ? 'sent' : 'received',
+              deliveries: env.deliveries || {}, acked: asOut ? undefined : false,
             };
             changed = true;
           }
@@ -1285,31 +1315,38 @@ class Engine extends EventEmitter {
         const rec = {
           msgId: env.msgId, sender: env.sender, senderDevice: env.senderDevice, sentAt: env.sentAt,
           seq: env.seq, prevId: env.prevId,
-          direction: fromMyDevice ? 'out' : 'in',
+          direction: asOut ? 'out' : 'in',
           serverSeq: env.serverSeq,
           verified,
           replyTo: b.replyTo || null,
         };
+        if (mineElsewhere) rec.otherDevice = true;
         if (decErr) {
           rec.text = `[undecryptable: ${decErr.message}]`;
           rec.state = 'suspect';
         } else if (b.kind === 'file') {
           rec.attachment = { name: b.name, mime: b.mime, size: b.size, isImage: !!b.isImage, dataB64: b.dataB64 };
           rec.text = b.text || '';
-          rec.state = fromMyDevice ? 'sent' : verified ? 'received' : 'suspect';
+          rec.state = asOut ? 'sent' : verified ? 'received' : 'suspect';
         } else {
           rec.text = String(b.text == null ? '' : b.text);
-          rec.state = fromMyDevice ? 'sent' : verified ? 'received' : 'suspect';
+          rec.state = asOut ? 'sent' : verified ? 'received' : 'suspect';
         }
-        if (!fromMyDevice) rec.acked = false;
-        if (fromMyDevice) {
+        if (!asOut) rec.acked = false;
+        if (asOut) {
           rec.deliveries = env.deliveries || {};
           rec.seenBy = env.seenBy || {};
           rec.state = this._deliveredEnough(rec) ? 'delivered' : 'sent';
         }
         conv.messages[env.msgId] = rec;
         changed = true;
-        if (!fromMyDevice) {
+        if (mineElsewhere && !this.store.loadAppConfig().multiDeviceSeen) {
+          this.store.saveAppConfig({ multiDeviceSeen: true });
+          this.event('multi-device-notice', {
+            text: `You're signed in as @${this.me} on another device — messages you send there show up here as yours.`,
+          });
+        }
+        if (!asOut) {
           this.event('decrypted', { convId: conv.convId, msgId: env.msgId, from: env.sender, verified });
           if (!decErr) {
             const preview =
@@ -1391,13 +1428,13 @@ class Engine extends EventEmitter {
 
   // -- views for the renderer --------------------------------------
   _displayState(m) {
+    if (m.locked) return 'locked'; // undecryptable placeholder — centred, regardless of side
     if (m.direction === 'out') {
       if (m.state === 'failed') return 'failed';
       if (m.editPending) return 'undelivered'; // edited, edit not yet delivered -> red again
       if (m.state === 'delivered') return 'delivered';
       return 'undelivered'; // pending | sent | otherDevice
     }
-    if (m.locked) return 'locked';
     if (m.state === 'suspect') return 'suspect';
     return 'received';
   }
@@ -1468,7 +1505,8 @@ class Engine extends EventEmitter {
               dataB64: m.attachment.dataB64 || null,
               dataUrl: m.attachment.isImage && m.attachment.dataB64 ? `data:${m.attachment.mime};base64,${m.attachment.dataB64}` : null }
           : null,
-        canEdit: m.direction === 'out' && !m.locked && !m.system && !m.attachment && m.text != null,
+        canEdit: m.direction === 'out' && !m.locked && !m.system && !m.attachment && !m.otherDevice && m.text != null,
+        otherDevice: !!m.otherDevice,
         // "seen" is only surfaced if THIS account sends read receipts too
         seen: m.direction === 'out' && this.readReceipts && !!(m.seenBy && Object.keys(m.seenBy).length),
       }));

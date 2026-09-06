@@ -222,6 +222,58 @@ async function section(name, fn) {
     ok('mixed text/edit/reaction/reply burst still converges to one canonical order [' + oa.join(',') + ']');
   });
 
+  // ---------------------------------------------------------------------
+  await section('same account on a second device: its messages render as yours', async () => {
+    // aliceB = the same "alice" account, a different local profile => its own
+    // keypair => a second enrolled device.
+    const aliceB = new Engine('aliceB');
+    aliceB.on('update', () => {});
+    const inbound = [];
+    let notices = 0;
+    aliceB.on('engine-event', (e) => {
+      if (e.kind === 'inbound-message') inbound.push(e);
+      if (e.kind === 'multi-device-notice') notices++;
+    });
+    let r = await aliceB.login({ username: 'alice', password: 'hunter2', deviceName: 'alice-laptop-2' });
+    if (r.needs2fa) await aliceB.completeLogin({ code: r.devCode, rememberDevice: true });
+    aliceB.stopLoops();
+    assert.notStrictEqual(aliceB.identity.deviceId, alice.identity.deviceId, 'the second device has its own deviceId');
+
+    const syncB = async (n = 12) => { for (let i = 0; i < n; i++) { await aliceB.syncOnce('t'); await alice.syncOnce('t'); await bob.syncOnce('t'); await sleep(20); } };
+    await syncB();
+
+    // messages from before device B enrolled: it was not a recipient, so they
+    // stay locked — but at least on the "yours" side, not shown as received.
+    const oldMsg = aliceB.getConversationView(cid).messages.find((m) => m.serverSeq === alice.getConversationView(cid).messages.find((x) => x.text === 'first message').serverSeq);
+    assert.ok(oldMsg, 'device B has a record for the pre-enrollment message');
+    assert.strictEqual(oldMsg.mine, true, 'pre-enrollment own message sits on the "yours" side');
+    assert.strictEqual(oldMsg.display, 'locked', 'but locked — device B was never a recipient of it');
+
+    // a NEW message from device A, after device B enrolled -> readable, "yours", no ping
+    inbound.length = 0;
+    await alice.sendMessage(cid, 'typed on device A');
+    await syncB();
+    const fresh = aliceB.getConversationView(cid).messages.find((m) => m.text === 'typed on device A');
+    assert.ok(fresh, 'device B can read a message device A sent after B enrolled');
+    assert.strictEqual(fresh.mine, true, 'it renders on your side on device B');
+    assert.strictEqual(fresh.otherDevice, true, 'flagged as from another of your devices');
+    assert.strictEqual(fresh.canEdit, false, 'not editable from this device');
+    assert.ok(['delivered', 'undelivered'].includes(fresh.display), 'outgoing delivery state, not "received"');
+    assert.strictEqual(inbound.length, 0, 'device B does NOT fire a notification for your own message');
+    assert.strictEqual(aliceB.listConversationsView().find((c) => c.convId === cid).unread, 0, 'and it does not count as unread');
+    assert.ok(notices >= 1, 'the one-time "signed in on another device" notice fired');
+
+    // a real message from bob still notifies device B normally
+    inbound.length = 0;
+    await bob.sendMessage(cid, 'hi from bob');
+    await syncB();
+    assert.ok(inbound.some((e) => e.preview === 'hi from bob'), 'a genuine incoming message still notifies');
+    const bobMsgOnB = aliceB.getConversationView(cid).messages.find((m) => m.text === 'hi from bob');
+    assert.strictEqual(bobMsgOnB.mine, false, "bob's message is not on your side");
+
+    ok('a second device shows the account\'s own messages as outgoing (tagged, not editable), with no self-notifications, while real inbound still notifies');
+  });
+
   console.log(`\n${fail ? '\x1b[31m' : '\x1b[32m'}${pass} passed, ${fail} failed\x1b[0m`);
   try { fs.rmSync(TMP, { recursive: true, force: true }); } catch {}
   process.exit(fail ? 1 : 0);

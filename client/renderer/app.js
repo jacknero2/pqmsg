@@ -554,7 +554,10 @@ window.pqmsg.onUpdate((s) => {
   state = s;
   render();
 });
-window.pqmsg.onEvent((ev) => logLine(fmtEvent(ev)));
+window.pqmsg.onEvent((ev) => {
+  logLine(fmtEvent(ev));
+  if (ev.kind === 'multi-device-notice') showToast({ title: 'Signed in on another device', body: ev.text });
+});
 
 // ---------- notifications ----------
 window.pqmsg.onOpenConversation((id) => { if (id) selectConv(id); });
@@ -710,6 +713,7 @@ async function renderThread() {
     } else if (m.display === 'received') {
       status = m.verified ? ' · ✓ sig ok' : '';
     }
+    if (m.otherDevice) status += ' · from your other device';
 
     const quote = m.replyTo
       ? `<div class="quote" data-jump="${esc(m.replyTo.msgId)}"><span class="qh">${esc(m.replyTo.who)} said:</span>${esc(m.replyTo.textPreview || '')}</div>`
@@ -884,6 +888,7 @@ function fmtEvent(ev) {
         : `<span class="k">✦ enrolled</span> ${esc(e.deviceName)} = ${short(e.deviceId)}`,
     'ws-open': () => `<span class="k">≋ websocket connected</span>`,
     'conversation-open': (e) => `→ opened @${e.username} · ${e.devices} device(s) · safety ${e.safetyNumber?.slice(0, 14)}…`,
+    'multi-device-notice': (e) => `<span class="k">⧉ ${esc(e.text)}</span>`,
   };
   const f = map[ev.kind];
   return f ? f(ev) : esc(ev.kind);
