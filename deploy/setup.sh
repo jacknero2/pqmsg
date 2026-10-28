@@ -67,9 +67,23 @@ fi
 chown -R "$SERVICE_USER:$SERVICE_USER" "$APP_DIR"
 chmod 600 "$APP_DIR/deploy/pqmsg.env"
 
-echo "==> installing systemd unit + Caddy site"
+echo "==> installing systemd unit + Caddy site (pqmsg.caddy only)"
 cp "$APP_DIR/deploy/pqmsg.service" /etc/systemd/system/pqmsg.service
-cp "$APP_DIR/deploy/Caddyfile" /etc/caddy/Caddyfile
+# pqmsg owns only /etc/caddy/pqmsg.caddy. Other sites on this machine
+# (lectio.jacknero.com, gradapps.jacknero.com) keep their own files, imported
+# by the main Caddyfile, so this script must never overwrite that file.
+cp "$APP_DIR/deploy/pqmsg.caddy" /etc/caddy/pqmsg.caddy
+touch /etc/caddy/Caddyfile
+# Older versions wrote chat.jacknero.com straight into the main file; move it
+# out so the site is not defined twice.
+if grep -q '^chat\.jacknero\.com {' /etc/caddy/Caddyfile; then
+  awk '/^chat\.jacknero\.com \{/ {skip = 1} skip && /^\}/ {skip = 0; next} !skip' \
+    /etc/caddy/Caddyfile > /etc/caddy/Caddyfile.new
+  mv /etc/caddy/Caddyfile.new /etc/caddy/Caddyfile
+fi
+grep -q 'import /etc/caddy/pqmsg.caddy' /etc/caddy/Caddyfile \
+  || printf '\nimport /etc/caddy/pqmsg.caddy\n' >> /etc/caddy/Caddyfile
+caddy validate --config /etc/caddy/Caddyfile >/dev/null
 systemctl daemon-reload
 systemctl enable --now pqmsg
 systemctl enable --now caddy

@@ -54,7 +54,11 @@ instance — no load balancer, no Redis, no autoscaling.
 
 **`deploy/setup.sh` does steps 2–4 for you** on a fresh Ubuntu/Debian box
 (installs Node 20 + Caddy, clones the repo, creates a `pqmsg` systemd service,
-writes a Caddyfile, pins an admin token):
+writes its own `/etc/caddy/pqmsg.caddy` and imports it from the main
+Caddyfile without touching other sites' config, pins an admin token).
+On a server that already has a checkout, run the script from GitHub (the
+`curl` line below) or `git pull` first: a checkout older than this change
+still has the version that overwrote `/etc/caddy/Caddyfile`:
 
 1. Provision a small VM (Oracle Cloud "Always Free" ARM, or a $5–6/mo
    Hetzner/DigitalOcean box — 1 vCPU / 1 GB RAM / a few GB disk is plenty) and
